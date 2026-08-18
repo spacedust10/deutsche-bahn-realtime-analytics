@@ -77,7 +77,9 @@ def test_network_edges_are_deduplicated_across_trips(timetable):
 def test_absolute_time_combines_service_date_with_gtfs_offset():
     from dbrt.static_gtfs import absolute_time
 
+    # 25:10 on the 18th is 01:10 local on the 19th, which is 23:10 UTC on the 18th.
     got = absolute_time(dt.date(2026, 8, 18), 25 * 3600 + 600)
-    assert got.date() == dt.date(2026, 8, 19)
-    assert got.hour == 1 and got.minute == 10
-    assert got.tzinfo is not None
+    assert got == dt.datetime(2026, 8, 18, 23, 10, tzinfo=dt.timezone.utc)
+
+    local = got.astimezone(dt.timezone(dt.timedelta(hours=2)))
+    assert (local.date(), local.hour, local.minute) == (dt.date(2026, 8, 19), 1, 10)
