@@ -528,7 +528,12 @@ const TrainMap = {
   raf: null,
 
   init() {
-    if (!window.maplibregl) return;
+    if (!window.maplibregl) return this.unavailable('Map library failed to load.');
+    // MapLibre needs WebGL. Headless renderers and locked-down browsers do not
+    // have it, and this used to throw straight out of boot().
+    if (typeof maplibregl.supported === 'function' && !maplibregl.supported()) {
+      return this.unavailable('This browser has no WebGL, so the map cannot draw.');
+    }
 
     this.map = new maplibregl.Map({
       container: 'map',
@@ -549,6 +554,19 @@ const TrainMap = {
       // A tile failure must not take the trains down with it.
       console.warn('map resource failed', e && e.error && e.error.message);
     });
+  },
+
+  /* The map is one panel, not the page. If it cannot start, say so in its own
+     panel and let every other chart carry on. */
+  unavailable(reason) {
+    const host = $('map');
+    if (host) {
+      host.innerHTML =
+        `<div class="empty"><strong>Map unavailable</strong><span>${reason} ` +
+        `Every other panel on this page still works.</span></div>`;
+    }
+    const count = $('map-train-count');
+    if (count) count.textContent = '—';
   },
 
   onLoad() {
@@ -934,13 +952,28 @@ async function pollOnce() {
 
 function boot() {
   renderLegend();
-  Timeline.init();
-  TrainMap.init();
+
+  // Data first, and each optional subsystem isolated. The map used to run
+  // before this and threw on browsers without WebGL, which left the whole
+  // dashboard showing "connecting" forever.
   pollOnce();                    // First paint without waiting for the socket.
   loadModel();
 
   if ('WebSocket' in window) connect();
   else setInterval(pollOnce, PUSH_MS);
+
+  try {
+    Timeline.init();
+  } catch (err) {
+    console.error('time slider unavailable', err);
+  }
+
+  try {
+    TrainMap.init();
+  } catch (err) {
+    console.error('map unavailable', err);
+    TrainMap.unavailable('The map failed to start.');
+  }
 
   setInterval(loadModel, 60_000);
   // Data age keeps counting between pushes so a stalled feed is visible.

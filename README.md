@@ -1,8 +1,13 @@
-# Deutsche Bahn Realtime Analytics
+# Stellwerk — Deutsche Bahn Realtime Analytics
 
-Realtime ingestion, warehousing, analysis and delay prediction for **Deutsche Bahn
-long-distance services (ICE / IC / EC)**, built on the official **GTFS-Realtime**
-standard and served through a live animated dashboard.
+Realtime ingestion, warehousing, analysis and delay prediction for **German
+long-distance rail (ICE / IC / EC)**, built on the official **GTFS-Realtime**
+standard and served through a live animated dashboard with a map of the running
+network.
+
+*Stellwerk* is the German word for the signal box that watches and routes a rail
+network. This project is independent and not affiliated with or endorsed by
+Deutsche Bahn AG.
 
 ![Dashboard](docs/dashboard.png)
 
@@ -26,7 +31,10 @@ that history and pushes it to the browser over a WebSocket.
 | **Delay propagation** | Traces how one service accumulates delay stop by stop |
 | **Disruptions** | Reports `SKIPPED` station calls and `CANCELED` services separately |
 | **Delay prediction** | Gradient boosting on the delay *delta*, cross-validated against a persistence baseline |
-| **Live dashboard** | Animated time series, network map, distribution, rankings, propagation |
+| **Live network map** | MapLibre map of the real rail network with trains positioned by interpolating the timetable against observed delay |
+| **Time-travel replay** | A slider replays collected history, using only observations published at or before the chosen instant |
+| **Live dashboard** | Animated time series, distribution, rankings, propagation, ingestion health, model importance |
+| **Readable by design** | Every panel states in words what it currently shows, not just what it plots |
 
 ---
 
@@ -150,18 +158,22 @@ GTFS-RT feed  --HTTPS+ETag-->  FeedClient
 | `GET /api/stations?limit=15` | Stations ranked by mean delay |
 | `GET /api/categories` | Punctuality per ICE / IC / EC / ECE |
 | `GET /api/distribution` | Delay histogram |
-| `GET /api/network` | Live train positions |
+| `GET /api/network` | Last reported station per train |
+| `GET /api/positions?at=` | Interpolated train positions, live or at a past instant |
+| `GET /api/geo/network` | Rail network as GeoJSON LineStrings |
+| `GET /api/geo/stations?min_calls=` | Stations as GeoJSON Points |
+| `GET /api/history/window` | Span the collected history covers (the slider range) |
 | `GET /api/cancellations` | Skipped stops and cancelled services |
 | `GET /api/trips/worst` | Most delayed services |
 | `GET /api/trips/{trip_id}/propagation` | One service's delay along its route |
 | `GET /api/model` | Model metrics and baseline comparison |
-| `WS /ws` | Full dashboard payload every 5 seconds |
+| `WS /ws` | Full dashboard payload every 10 seconds, matching the feed's own republish rate |
 
 ---
 
 ## Tests
 
-Built test-first. 162 tests across unit, database, API and live-feed layers.
+Built test-first. 204 tests across unit, database, API and live-feed layers.
 
 ```bash
 make test
