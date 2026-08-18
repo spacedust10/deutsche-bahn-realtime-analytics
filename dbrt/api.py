@@ -88,6 +88,12 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
     ) -> list[dict]:
         return analytics.station_delays(warehouse(), limit=limit, min_observations=min_observations, hours=hours)
 
+    @app.get("/api/dashboard")
+    def dashboard() -> dict:
+        """The same payload the WebSocket pushes, for first paint and for
+        clients where WebSockets are unavailable."""
+        return _dashboard_payload(warehouse(), settings)
+
     @app.get("/api/cancellations")
     def cancellations(hours: int = Query(24, ge=1, le=168)) -> dict:
         return {

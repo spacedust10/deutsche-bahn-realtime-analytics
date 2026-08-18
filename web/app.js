@@ -376,6 +376,17 @@ function setStatus(state, text) {
   document.getElementById('status-text').textContent = text;
 }
 
+/* Paint immediately from REST, then let the socket take over. Waiting for the
+ * first push left every chart blank on load, and blank forever wherever
+ * WebSockets are blocked. */
+async function paintInitialState() {
+  try {
+    applyPayload(await (await fetch('/api/dashboard')).json());
+  } catch (err) {
+    console.warn('initial dashboard fetch failed', err);
+  }
+}
+
 function connect() {
   const scheme = location.protocol === 'https:' ? 'wss' : 'ws';
   const socket = new WebSocket(`${scheme}://${location.host}/ws`);
@@ -418,6 +429,6 @@ async function loadModelInfo() {
 
 window.addEventListener('resize', () => Object.values(charts).forEach((c) => c.resize()));
 
-loadStationGeo().then(connect);
+loadStationGeo().then(paintInitialState).then(connect);
 loadModelInfo();
 setInterval(loadModelInfo, 60000);
