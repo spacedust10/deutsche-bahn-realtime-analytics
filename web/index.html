@@ -4,7 +4,6 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>DB Fernverkehr · Realtime Delay Analytics</title>
-<link rel="preconnect" href="https://cdn.jsdelivr.net">
 <link rel="stylesheet" href="/static/styles.css">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>🚄</text></svg>">
 </head>
@@ -135,7 +134,10 @@
   </div>
 </footer>
 
-<script src="https://cdn.jsdelivr.net/npm/echarts@5.5.1/dist/echarts.min.js"></script>
+<!-- Vendored, not CDN: the dashboard has to render on a machine with no
+     internet access to anything but the feed, and a CDN outage should not
+     blank every chart. Apache-2.0, see web/vendor/README.md -->
+<script src="/static/vendor/echarts.min.js"></script>
 <script src="/static/app.js"></script>
 </body>
 </html>
