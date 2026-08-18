@@ -1,0 +1,25 @@
+# PostgreSQL for anyone without a local instance:
+#   docker compose up -d
+#   PGUSER=dbrt PGPASSWORD=dbrt PGDATABASE=dbrt python -m dbrt
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: dbrt-postgres
+    environment:
+      POSTGRES_USER: dbrt
+      POSTGRES_PASSWORD: dbrt
+      POSTGRES_DB: dbrt
+    ports:
+      - "5432:5432"
+    volumes:
+      - dbrt-pgdata:/var/lib/postgresql/data
+      # Applied on first start of an empty data directory.
+      - ./db/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U dbrt -d dbrt"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  dbrt-pgdata:
