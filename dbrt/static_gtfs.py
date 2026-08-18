@@ -9,6 +9,7 @@ from the open fallback covers all of German public transport.
 from __future__ import annotations
 
 import csv
+import datetime as dt
 import io
 import time
 import zipfile
@@ -21,6 +22,10 @@ import requests
 # Categories the architecture scopes the project to, plus the EuroCity Express
 # variant DB publishes alongside EC.
 LONG_DISTANCE_CATEGORIES = frozenset({"ICE", "IC", "EC", "ECE"})
+
+# GTFS clock times are offsets from the start of the local service day.
+# ponytail: fixed CEST offset, swap for zoneinfo if winter-timetable accuracy matters.
+BERLIN = dt.timezone(dt.timedelta(hours=2))
 
 
 @dataclass(frozen=True)
@@ -43,10 +48,46 @@ class Stop:
 
 
 @dataclass(frozen=True)
+class StopCall:
+    """One scheduled call of one trip at one stop."""
+
+    trip_id: str
+    stop_id: str
+    stop_sequence: int
+    arrival_seconds: int | None
+    departure_seconds: int | None
+
+
+@dataclass(frozen=True)
 class Trip:
     trip_id: str
     route_id: str
     service_id: str
+
+
+def parse_gtfs_time(raw: str | None) -> int | None:
+    """"HH:MM:SS" -> seconds since the start of the service day.
+
+    Hours >= 24 are legal GTFS and mean "after midnight, still the same service
+    day", so the value is deliberately not wrapped modulo 24h. The live DB feed
+    really does publish values like 31:57:00.
+    """
+    if not raw:
+        return None
+    parts = str(raw).strip().split(":")
+    if len(parts) != 3:
+        return None
+    try:
+        hours, minutes, seconds = (int(p) for p in parts)
+    except ValueError:
+        return None
+    return hours * 3600 + minutes * 60 + seconds
+
+
+def absolute_time(service_date: dt.date, offset_seconds: int) -> dt.datetime:
+    """Turn a service date plus a GTFS offset into a real UTC instant."""
+    local_midnight = dt.datetime.combine(service_date, dt.time(0, 0), tzinfo=BERLIN)
+    return (local_midnight + dt.timedelta(seconds=offset_seconds)).astimezone(dt.timezone.utc)
 
 
 def category_from_short_name(short_name: str | None) -> str:
@@ -63,20 +104,45 @@ class StaticTimetable:
     dicts is simpler and faster than querying PostgreSQL on the hot path.
     """
 
-    def __init__(self, routes: dict[str, Route], trips: dict[str, Trip], stops: dict[str, Stop]):
+    def __init__(
+        self,
+        routes: dict[str, Route],
+        trips: dict[str, Trip],
+        stops: dict[str, Stop],
+        stop_times: dict[str, list[StopCall]] | None = None,
+    ):
         self.routes = routes
         self.trips = trips
         self.stops = stops
+        # Optional because the collector never needs it; only the map does, and
+        # stop_times.txt is by far the largest file in the archive.
+        self.stop_times = stop_times or {}
 
     # --- construction ------------------------------------------------------
 
     @classmethod
-    def from_zip(cls, path: Path | str) -> StaticTimetable:
+    def from_zip(cls, path: Path | str, load_stop_times: bool = False) -> StaticTimetable:
         with zipfile.ZipFile(path) as archive:
             routes = {r.route_id: r for r in _routes(_rows(archive, "routes.txt"))}
             trips = {t.trip_id: t for t in _trips(_rows(archive, "trips.txt"))}
             stops = {s.stop_id: s for s in _stops(_rows(archive, "stops.txt"))}
-        return cls(routes, trips, stops)
+            # Opt-in: stop_times.txt is by far the largest file in the archive and
+            # only the map needs it. The collector runs without it.
+            calls = _stop_times(_rows(archive, "stop_times.txt")) if load_stop_times else {}
+        return cls(routes, trips, stops, calls)
+
+    def network_edges(self) -> list[tuple[str, str]]:
+        """Deduplicated consecutive stop pairs: the drawable rail network.
+
+        Hundreds of trips share the same track, so the raw pair list is heavily
+        redundant; the map only needs each physical link once.
+        """
+        edges: dict[tuple[str, str], None] = {}
+        for calls in self.stop_times.values():
+            for first, second in zip(calls, calls[1:], strict=False):  # pairwise: last has no successor
+                if first.stop_id in self.stops and second.stop_id in self.stops:
+                    edges.setdefault((first.stop_id, second.stop_id), None)
+        return list(edges)
 
     # --- lookups -----------------------------------------------------------
 
@@ -168,6 +234,23 @@ def _stops(rows: Iterable[dict]) -> Iterable[Stop]:
             stop_lon=_float(row.get("stop_lon")),
             parent_station=(row.get("parent_station") or "").strip() or None,
         )
+
+
+def _stop_times(rows: Iterable[dict]) -> dict[str, list[StopCall]]:
+    grouped: dict[str, list[StopCall]] = {}
+    for row in rows:
+        call = StopCall(
+            trip_id=row["trip_id"],
+            stop_id=row["stop_id"],
+            stop_sequence=_int(row.get("stop_sequence")) or 0,
+            arrival_seconds=parse_gtfs_time(row.get("arrival_time")),
+            departure_seconds=parse_gtfs_time(row.get("departure_time")),
+        )
+        grouped.setdefault(call.trip_id, []).append(call)
+    # The feed is usually already ordered, but interpolation depends on it.
+    for calls in grouped.values():
+        calls.sort(key=lambda c: c.stop_sequence)
+    return grouped
 
 
 def _int(raw) -> int | None:

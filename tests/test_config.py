@@ -1,7 +1,7 @@
 """Settings resolution, especially which realtime source gets used."""
 import pytest
 
-from dbrt.config import Settings
+from dbrt.config import DEFAULT_POLL_SECONDS, Settings
 
 
 def test_defaults_point_at_official_db_fernverkehr_endpoints():
@@ -44,7 +44,7 @@ def test_poll_interval_is_read_as_int_and_floored_at_ten_seconds():
 
 
 def test_invalid_poll_interval_falls_back_to_default_rather_than_crashing():
-    assert Settings.from_env({"POLL_INTERVAL_SECONDS": "abc"}).poll_interval_seconds == 60
+    assert Settings.from_env({"POLL_INTERVAL_SECONDS": "abc"}).poll_interval_seconds == DEFAULT_POLL_SECONDS
 
 
 def test_dsn_is_assembled_from_pg_environment():
@@ -107,7 +107,7 @@ def test_load_dotenv_on_a_missing_file_is_empty_not_an_error(tmp_path):
 
 def test_real_environment_wins_over_the_dotenv_file(tmp_path, monkeypatch):
     """A deliberate export must not be silently overridden by a stale .env."""
-    from dbrt.config import Settings
+    from dbrt.config import DEFAULT_POLL_SECONDS, Settings
 
     env_file = tmp_path / ".env"
     env_file.write_text("PGDATABASE=from_file\n")
@@ -117,7 +117,7 @@ def test_real_environment_wins_over_the_dotenv_file(tmp_path, monkeypatch):
 
 
 def test_dotenv_values_are_used_when_the_environment_is_silent(tmp_path, monkeypatch):
-    from dbrt.config import Settings
+    from dbrt.config import DEFAULT_POLL_SECONDS, Settings
 
     env_file = tmp_path / ".env"
     env_file.write_text("PGDATABASE=from_file\nDB_API_KEY=filekey\n")

@@ -274,3 +274,41 @@ def test_the_final_model_is_fitted_on_all_data_after_scoring(persistent_observat
     model.train(persistent_observations)
     assert model.model is not None
     assert len(model.predict(next_stop_pairs(persistent_observations).head(5))) == 5
+
+
+# --- feature importance ----------------------------------------------------
+
+def test_metrics_report_permutation_importance_for_every_feature(persistent_metrics):
+    """HistGradientBoosting exposes no feature_importances_, so importance has
+    to be measured by permutation or the dashboard has nothing to plot."""
+    importance = persistent_metrics["feature_importance"]
+
+    assert len(importance) == len(persistent_metrics["features"])
+    assert {row["feature"] for row in importance} == set(persistent_metrics["features"])
+    for row in importance:
+        assert "importance" in row
+
+
+def test_importance_is_sorted_strongest_first(persistent_metrics):
+    values = [row["importance"] for row in persistent_metrics["feature_importance"]]
+    assert values == sorted(values, reverse=True)
+
+
+def test_importance_shares_are_normalised_to_one(persistent_metrics):
+    total = sum(row["importance"] for row in persistent_metrics["feature_importance"])
+    assert total == pytest.approx(1.0, abs=0.01)
+
+
+def test_the_drivers_of_the_synthetic_drift_rank_near_the_top(persistent_metrics):
+    """The fixture builds drift from current delay, stop sequence and product,
+    so those must outrank calendar noise like day_of_week."""
+    ranked = [row["feature"] for row in persistent_metrics["feature_importance"]]
+    assert "delay" in ranked[:3]
+    assert ranked.index("delay") < ranked.index("day_of_week")
+
+
+def test_metrics_state_plainly_whether_the_model_beat_the_baseline(persistent_metrics):
+    assert isinstance(persistent_metrics["beats_baseline"], bool)
+    assert persistent_metrics["beats_baseline"] == (
+        persistent_metrics["mae_seconds"] < persistent_metrics["baseline_mae_seconds"]
+    )

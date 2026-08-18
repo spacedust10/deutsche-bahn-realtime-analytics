@@ -13,3 +13,17 @@ Vendored rather than loaded from a CDN for two reasons:
    self-contained.
 
 To update, re-download the same path at the new version and bump this file.
+
+## maplibre-gl.js / maplibre-gl.css — MapLibre GL JS 5.24.0
+
+Source: https://cdn.jsdelivr.net/npm/maplibre-gl@5.24.0/dist/
+License: BSD-3-Clause (MapLibre contributors)
+
+Pinned to the 5.x line deliberately: 6.x ships ESM-only and no longer publishes
+the UMD `dist/maplibre-gl.js` this page loads with a plain `<script>` tag.
+
+The library is vendored for the same reasons as ECharts. **Basemap tiles are
+not** — they are fetched at runtime from OpenFreeMap (https://openfreemap.org,
+ODbL, no API key). The map degrades to network-and-trains-only when tiles are
+unreachable, so the page still works offline; it just loses the terrain
+underneath.

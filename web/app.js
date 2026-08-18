@@ -1,437 +1,989 @@
-/* Realtime dashboard client.
+/* ---------------------------------------------------------------------------
+ * Stellwerk dashboard.
  *
- * One WebSocket carries the whole dashboard payload; every chart is created
- * once and then fed with setOption, which is what lets ECharts tween between
- * states instead of redrawing. Redrawing on each push would flicker and throw
- * away the animation that makes a realtime view readable. */
+ * One WebSocket carries the whole payload on the feed's own 10s rhythm. Charts
+ * are created once and fed with setOption, so ECharts animates between states
+ * instead of tearing down and rebuilding.
+ *
+ * Train markers are the exception: MapLibre GeoJSON sources snap rather than
+ * tween, so positions are lerped client-side across the push interval. That is
+ * what makes trains glide instead of teleporting every ten seconds.
+ * --------------------------------------------------------------------------- */
 
-const PALETTE = {
-  red: '#ec0016', redLo: '#ff4b57', amber: '#ffb020',
-  green: '#22c98a', cyan: '#35c8e8', violet: '#8b7cf6',
-  text: '#e8eef7', dim: '#8296ae', mute: '#56677d',
-  line: '#1e2836', panel: '#0e131c',
+'use strict';
+
+const PUSH_MS = 10_000;          // Matches the server's WebSocket heartbeat.
+const REDUCED = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+/* Mirrors :root in styles.css. Two mirrored palettes is a real cost, so keep
+   them in sync: severity is monotone in lightness by construction. */
+const C = {
+  ink: '#eef2f8', ink2: '#a8b6ca', muted: '#8195ad',
+  panel: '#131a24', raise: '#1a2331', line: '#243041',
+  d0: '#007a2a', d1: '#a28500', d2: '#ff7406', d3: '#ff9c9c',
+  ice: '#3987e5', ic: '#d95926', ec: '#9085e9', ece: '#c98500', oth: '#8195ad',
+  ok: '#199e70', warn: '#c98500', bad: '#e66767',
 };
 
-const PUNCTUAL_SECONDS = 360;  // DB's own definition of "on time".
+/* The severity scale, defined once and used by the map, the legend and the
+   distribution chart so they cannot drift apart. */
+const SEVERITY = [
+  { max: 180,       color: C.d0, label: 'On time (under 3 min)' },
+  { max: 360,       color: C.d1, label: '3 to 6 min' },
+  { max: 900,       color: C.d2, label: '6 to 15 min' },
+  { max: Infinity,  color: C.d3, label: '15 min or more' },
+];
 
-const charts = {};
-let selectedTrip = null;
-let stationGeo = [];   // Static station coordinates, fetched once.
+const severityColor = (seconds) =>
+  (SEVERITY.find((band) => (seconds ?? 0) < band.max) || SEVERITY[SEVERITY.length - 1]).color;
 
-// ---------------------------------------------------------------------------
-// helpers
-// ---------------------------------------------------------------------------
+const CATEGORY_COLOR = { ICE: C.ice, IC: C.ic, EC: C.ec, ECE: C.ece };
+const categoryColor = (name) => CATEGORY_COLOR[name] || C.oth;
 
-const minutes = (seconds) => (seconds || 0) / 60;
+/* --- small helpers -------------------------------------------------------- */
 
-function delayColour(seconds) {
-  if (seconds < PUNCTUAL_SECONDS) return PALETTE.green;
-  if (seconds < 900) return PALETTE.amber;
-  return PALETTE.red;
+const $ = (id) => document.getElementById(id);
+const minutes = (seconds) => (seconds ?? 0) / 60;
+const fmt = (n, d = 1) => (n === null || n === undefined || Number.isNaN(n) ? '—' : n.toFixed(d));
+
+const clockTime = (iso) =>
+  iso ? new Date(iso).toLocaleTimeString('en-GB', { hour12: false }) : '--:--:--';
+
+function relativeAge(iso) {
+  if (!iso) return '—';
+  const seconds = Math.max(0, (Date.now() - new Date(iso).getTime()) / 1000);
+  if (seconds < 60) return `${Math.round(seconds)}s`;
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ${Math.round(seconds % 60)}s`;
+  return `${Math.floor(seconds / 3600)}h ${Math.floor((seconds % 3600) / 60)}m`;
 }
 
-function delayClass(seconds) {
-  if (seconds < PUNCTUAL_SECONDS) return 'd-ok';
-  if (seconds < 900) return 'd-warn';
-  return 'd-bad';
+/* Writes a panel's live reading and its severity dot. This is the difference
+   between a chart you look at and one you can act on. */
+function setReading(id, tone, text) {
+  const el = $(id);
+  if (!el) return;
+  el.className = `panel-read ${tone}`;
+  el.querySelector('span:last-child').textContent = text;
 }
 
-function clockTime(iso) {
-  if (!iso) return '--:--:--';
-  return new Date(iso).toLocaleTimeString('de-DE', { hour12: false, timeZone: 'Europe/Berlin' });
-}
+/* --- ECharts scaffolding -------------------------------------------------- */
 
-/* Count from the previous value to the new one so numbers feel live rather
- * than snapping. Each element keeps its own animation frame handle. */
-function animateCounter(el, target, decimals = 0) {
-  const from = parseFloat(el.dataset.current || '0');
-  const to = Number.isFinite(target) ? target : 0;
-  if (from === to) return;
-
-  el.dataset.current = String(to);
-  cancelAnimationFrame(Number(el.dataset.raf || 0));
-
-  const started = performance.now();
-  const DURATION = 850;
-
-  const step = (now) => {
-    const t = Math.min((now - started) / DURATION, 1);
-    const eased = 1 - Math.pow(1 - t, 3);                 // easeOutCubic
-    const value = from + (to - from) * eased;
-    el.textContent = decimals
-      ? value.toFixed(decimals)
-      : Math.round(value).toLocaleString('en-US');
-    if (t < 1) el.dataset.raf = String(requestAnimationFrame(step));
-  };
-  el.dataset.raf = String(requestAnimationFrame(step));
-}
-
-function setCounter(key, value, decimals = 0) {
-  const el = document.querySelector(`[data-counter="${key}"]`);
-  if (el) animateCounter(el, value, decimals);
-}
-
-const BASE_OPTION = {
-  animationDuration: 750,
-  animationDurationUpdate: 800,
-  animationEasing: 'cubicOut',
-  animationEasingUpdate: 'cubicInOut',
-  textStyle: { fontFamily: 'Inter, -apple-system, sans-serif', color: PALETTE.dim },
-  tooltip: {
-    backgroundColor: 'rgba(10,14,20,.95)',
-    borderColor: PALETTE.line,
-    textStyle: { color: PALETTE.text, fontSize: 12 },
-    padding: [8, 12],
-  },
-};
-
-const AXIS = {
-  axisLine: { lineStyle: { color: PALETTE.line } },
-  axisTick: { show: false },
-  axisLabel: { color: PALETTE.mute, fontSize: 10.5 },
-  splitLine: { lineStyle: { color: 'rgba(30,40,54,.55)', type: 'dashed' } },
-};
+const charts = new Map();
 
 function chart(id) {
-  if (!charts[id]) {
-    charts[id] = echarts.init(document.getElementById(id), null, { renderer: 'canvas' });
-  }
-  return charts[id];
+  if (charts.has(id)) return charts.get(id);
+  const el = $(id);
+  if (!el) return null;
+  const instance = echarts.init(el, null, { renderer: 'canvas' });
+  charts.set(id, instance);
+  return instance;
 }
 
-// ---------------------------------------------------------------------------
-// charts
-// ---------------------------------------------------------------------------
+const AXIS_LABEL = { color: C.muted, fontSize: 10.5 };
+const SPLIT_LINE = { lineStyle: { color: C.line, width: 1 } };   // hairline, never dashed
 
-function renderTimeseries(rows) {
-  const times = rows.map((r) => clockTime(r.bucket));
-  chart('chart-timeseries').setOption({
-    ...BASE_OPTION,
-    grid: { left: 46, right: 52, top: 34, bottom: 26 },
-    legend: {
-      data: ['Mean delay', 'P90 delay', 'Punctuality'],
-      textStyle: { color: PALETTE.dim, fontSize: 11 },
-      itemWidth: 14, itemHeight: 8, top: 0, right: 0,
-    },
-    tooltip: { ...BASE_OPTION.tooltip, trigger: 'axis',
-      axisPointer: { type: 'line', lineStyle: { color: 'rgba(236,0,22,.45)' } } },
-    xAxis: { type: 'category', data: times, boundaryGap: false, ...AXIS, splitLine: { show: false } },
-    yAxis: [
-      { type: 'value', name: 'min', nameTextStyle: { color: PALETTE.mute, fontSize: 10 }, ...AXIS },
-      { type: 'value', name: '%', min: 0, max: 100, position: 'right',
-        nameTextStyle: { color: PALETTE.mute, fontSize: 10 }, ...AXIS, splitLine: { show: false } },
-    ],
-    series: [
-      {
-        name: 'Mean delay', type: 'line', smooth: 0.35, symbol: 'none',
-        data: rows.map((r) => +minutes(r.mean_delay_seconds).toFixed(2)),
-        lineStyle: { width: 2.4, color: PALETTE.red },
-        areaStyle: {
-          color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
-            { offset: 0, color: 'rgba(236,0,22,.42)' },
-            { offset: 1, color: 'rgba(236,0,22,.02)' },
-          ]),
-        },
-      },
-      {
-        name: 'P90 delay', type: 'line', smooth: 0.35, symbol: 'none',
-        data: rows.map((r) => +minutes(r.p90_delay_seconds).toFixed(2)),
-        lineStyle: { width: 1.6, color: PALETTE.amber, type: 'dashed' },
-      },
-      {
-        name: 'Punctuality', type: 'line', smooth: 0.35, yAxisIndex: 1,
-        symbol: 'circle', symbolSize: 5, showSymbol: false,
-        data: rows.map((r) => r.punctuality_pct),
-        lineStyle: { width: 2, color: PALETTE.green },
-        itemStyle: { color: PALETTE.green },
-      },
-    ],
-  });
+const baseGrid = (over = {}) => ({ left: 46, right: 16, top: 26, bottom: 26, containLabel: true, ...over });
+
+const baseTooltip = (extra = {}) => ({
+  trigger: 'axis',
+  backgroundColor: C.raise,
+  borderColor: C.line,
+  borderWidth: 1,
+  padding: [8, 11],
+  textStyle: { color: C.ink, fontSize: 11.5 },
+  axisPointer: { type: 'line', lineStyle: { color: C.muted, width: 1 } },
+  ...extra,
+});
+
+const timeAxis = () => ({
+  type: 'time',
+  axisLabel: { ...AXIS_LABEL, formatter: (v) => new Date(v).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }) },
+  axisLine: { lineStyle: { color: C.line } },
+  axisTick: { show: false },
+  splitLine: { show: false },
+});
+
+const valueAxis = (name, over = {}) => ({
+  type: 'value',
+  name,
+  nameTextStyle: { color: C.muted, fontSize: 10, padding: [0, 0, 0, -30] },
+  axisLabel: AXIS_LABEL,
+  axisLine: { show: false },
+  axisTick: { show: false },
+  splitLine: SPLIT_LINE,
+  ...over,
+});
+
+function showEmpty(id, title, hint) {
+  const el = $(id);
+  if (!el || el.dataset.state === 'empty') return;
+  const instance = charts.get(id);
+  if (instance) { instance.dispose(); charts.delete(id); }
+  el.dataset.state = 'empty';
+  el.innerHTML = `<div class="empty"><strong>${title}</strong><span>${hint}</span></div>`;
 }
 
-function renderMap(trains) {
-  const located = trains.filter((t) => t.stop_lat && t.stop_lon);
-  const late = located.filter((t) => t.current_delay_seconds >= 900);
-  const rest = located.filter((t) => t.current_delay_seconds < 900);
-
-  const point = (t) => ({
-    value: [t.stop_lon, t.stop_lat, t.current_delay_seconds],
-    name: `${t.route_name || t.route_category} · ${t.stop_name}`,
-    itemStyle: { color: delayColour(t.current_delay_seconds) },
-  });
-
-  chart('chart-map').setOption({
-    ...BASE_OPTION,
-    grid: { left: 6, right: 6, top: 8, bottom: 6 },
-    tooltip: {
-      ...BASE_OPTION.tooltip,
-      formatter: (p) => `${p.name}<br/><b>${(p.value[2] / 60).toFixed(1)} min</b> delay`,
-    },
-    // Longitude/latitude on a plain cartesian grid: GTFS-RT TripUpdates carry
-    // no coordinates, so trains are drawn at their last reported station.
-    xAxis: { type: 'value', min: 5.6, max: 15.4, show: false },
-    yAxis: { type: 'value', min: 47.1, max: 55.2, show: false },
-    series: [
-      {
-        // Every long-distance station, dimmed: without it 130 trains read as
-        // scattered dots rather than as a rail network over Germany.
-        type: 'scatter', silent: true, symbolSize: 2.2, animation: false,
-        data: stationGeo.map((s) => [s.stop_lon, s.stop_lat]),
-        itemStyle: { color: '#2b3a4d', opacity: 0.75 },
-      },
-      {
-        type: 'scatter', data: rest.map(point),
-        symbolSize: (v) => 7 + Math.min(v[2] / 200, 9),
-        itemStyle: { opacity: 0.92, borderColor: 'rgba(0,0,0,.5)', borderWidth: 0.5 },
-      },
-      {
-        // Ripple draws the eye to the trains that are actually in trouble.
-        type: 'effectScatter', data: late.map(point),
-        symbolSize: (v) => 9 + Math.min(v[2] / 200, 12),
-        rippleEffect: { brushType: 'stroke', scale: 3, period: 3.4 },
-        zlevel: 1,
-      },
-    ],
-  });
+function clearEmpty(id) {
+  const el = $(id);
+  if (el && el.dataset.state === 'empty') { el.innerHTML = ''; delete el.dataset.state; }
 }
 
-function renderDistribution(rows) {
-  const colours = {
-    'early': PALETTE.cyan, 'on time (<6 min)': PALETTE.green, '6-15 min': PALETTE.amber,
-    '15-30 min': '#ff8c42', '30-60 min': PALETTE.redLo, '60+ min': PALETTE.red,
+/* --- metric strip --------------------------------------------------------- */
+
+const counters = new Map();
+
+/* Counts toward the new value rather than snapping, so a changing number reads
+   as movement. Skipped entirely under reduced motion. */
+function setCounter(key, value, decimals = 0) {
+  const el = document.querySelector(`[data-counter="${key}"]`);
+  if (!el) return;
+  if (value === null || value === undefined || Number.isNaN(value)) { el.textContent = '—'; return; }
+  const from = counters.get(key) ?? value;
+  counters.set(key, value);
+
+  if (REDUCED || from === value) { el.textContent = value.toFixed(decimals); return; }
+
+  const start = performance.now();
+  const step = (now) => {
+    const t = Math.min(1, (now - start) / 500);
+    const eased = 1 - Math.pow(1 - t, 3);
+    el.textContent = (from + (value - from) * eased).toFixed(decimals);
+    if (t < 1) requestAnimationFrame(step);
   };
-  chart('chart-distribution').setOption({
-    ...BASE_OPTION,
-    grid: { left: 44, right: 16, top: 18, bottom: 46 },
-    tooltip: { ...BASE_OPTION.tooltip, trigger: 'item' },
-    xAxis: { type: 'category', data: rows.map((r) => r.band), ...AXIS,
-      splitLine: { show: false }, axisLabel: { ...AXIS.axisLabel, interval: 0, rotate: 26 } },
-    yAxis: { type: 'value', ...AXIS },
+  requestAnimationFrame(step);
+}
+
+function sparkline(id, values, color) {
+  if (!values || values.length < 4) return;   // fewer points read as a bar, not a trend
+  const instance = chart(id);
+  if (!instance) return;
+  instance.setOption({
+    animation: !REDUCED,
+    grid: { left: 0, right: 0, top: 2, bottom: 2 },
+    xAxis: { type: 'category', show: false },
+    yAxis: { type: 'value', show: true, min: 'dataMin', max: 'dataMax', axisLabel: { show: false }, splitLine: { show: false }, axisLine: { show: false }, axisTick: { show: false } },
     series: [{
-      type: 'bar', data: rows.map((r) => ({
-        value: r.stops,
-        itemStyle: { color: colours[r.band] || PALETTE.dim, borderRadius: [4, 4, 0, 0] },
-      })),
-      barMaxWidth: 46,
+      type: 'line', data: values, showSymbol: false, smooth: 0.3,
+      lineStyle: { width: 1.5, color },
+      areaStyle: { color: { type: 'linear', x: 0, y: 0, x2: 0, y2: 1, colorStops: [
+        { offset: 0, color: `${color}2e` }, { offset: 1, color: `${color}00` }] } },
     }],
   });
+}
+
+/* --- charts --------------------------------------------------------------- */
+
+function renderTimeseries(rows) {
+  if (!rows || rows.length < 2) {
+    showEmpty('chart-timeseries', 'Not enough history yet',
+      'The first few polls are still landing. This chart needs at least two 5-minute buckets.');
+    return;
+  }
+  clearEmpty('chart-timeseries');
+  const instance = chart('chart-timeseries');
+  if (!instance) return;
+
+  const mean = rows.map((r) => [r.bucket, minutes(r.mean_delay_seconds)]);
+  const p90 = rows.map((r) => [r.bucket, minutes(r.p90_delay_seconds)]);
+
+  instance.setOption({
+    animation: !REDUCED, animationDuration: 400, animationEasing: 'quarticOut',
+    tooltip: baseTooltip({ valueFormatter: (v) => `${fmt(v)} min` }),
+    legend: {
+      data: ['Mean delay', '90th percentile'], top: 0, right: 0,
+      textStyle: { color: C.ink2, fontSize: 11 }, itemWidth: 14, itemHeight: 2, icon: 'rect',
+    },
+    grid: baseGrid({ top: 34 }),
+    xAxis: timeAxis(),
+    yAxis: valueAxis('min'),
+    series: [
+      { name: '90th percentile', type: 'line', data: p90, showSymbol: false, smooth: 0.25,
+        // itemStyle drives the legend swatch; lineStyle alone leaves the legend
+        // showing ECharts' default palette and disagreeing with the line.
+        itemStyle: { color: C.d2 }, lineStyle: { width: 2, color: C.d2 },
+        areaStyle: { color: { type: 'linear', x: 0, y: 0, x2: 0, y2: 1, colorStops: [
+          { offset: 0, color: `${C.d2}30` }, { offset: 1, color: `${C.d2}00` }] } } },
+      { name: 'Mean delay', type: 'line', data: mean, showSymbol: false, smooth: 0.25,
+        itemStyle: { color: C.ice }, lineStyle: { width: 2, color: C.ice } },
+    ],
+  });
+
+  const latest = rows[rows.length - 1];
+  const first = rows[0];
+  const drift = minutes(latest.mean_delay_seconds) - minutes(first.mean_delay_seconds);
+  const spread = minutes(latest.p90_delay_seconds) - minutes(latest.mean_delay_seconds);
+  const direction = Math.abs(drift) < 0.3 ? 'holding steady' : drift > 0 ? `up ${fmt(drift)} min` : `down ${fmt(-drift)} min`;
+  const tone = minutes(latest.mean_delay_seconds) > 6 ? 'bad' : minutes(latest.mean_delay_seconds) > 3 ? 'warn' : 'good';
+  setReading('read-timeseries', tone,
+    `Mean delay is ${fmt(minutes(latest.mean_delay_seconds))} min and ${direction} across this window. ` +
+    `The p90 sits ${fmt(spread)} min above the mean, so ${spread > 8 ? 'a minority of services is carrying most of the lateness' : 'lateness is spread fairly evenly'}.`);
+}
+
+function renderPunctuality(rows) {
+  if (!rows || rows.length < 2) {
+    showEmpty('chart-punctuality', 'Not enough history yet', 'Punctuality needs at least two buckets to plot a trend.');
+    return;
+  }
+  clearEmpty('chart-punctuality');
+  const instance = chart('chart-punctuality');
+  if (!instance) return;
+
+  const data = rows.map((r) => [r.bucket, r.punctuality_pct]);
+
+  instance.setOption({
+    animation: !REDUCED, animationDuration: 400, animationEasing: 'quarticOut',
+    tooltip: baseTooltip({ valueFormatter: (v) => `${fmt(v)}%` }),
+    grid: baseGrid(),
+    xAxis: timeAxis(),
+    yAxis: valueAxis('%', { max: 100, min: (v) => Math.max(0, Math.floor(v.min - 5)) }),
+    series: [{
+      name: 'Punctuality', type: 'line', data, showSymbol: false, smooth: 0.25,
+      lineStyle: { width: 2, color: C.ok },
+      areaStyle: { color: { type: 'linear', x: 0, y: 0, x2: 0, y2: 1, colorStops: [
+        { offset: 0, color: `${C.ok}33` }, { offset: 1, color: `${C.ok}00` }] } },
+      markLine: {
+        silent: true, symbol: 'none',
+        label: { formatter: 'DB target 80%', color: C.muted, fontSize: 10, position: 'insideEndTop' },
+        lineStyle: { color: C.muted, width: 1, type: 'solid', opacity: 0.5 },
+        data: [{ yAxis: 80 }],
+      },
+    }],
+  });
+
+  const latest = rows[rows.length - 1].punctuality_pct;
+  const tone = latest >= 80 ? 'good' : latest >= 65 ? 'warn' : 'bad';
+  setReading('read-punctuality', tone,
+    `${fmt(latest)}% of calls are running under the 6-minute threshold right now, ` +
+    `${latest >= 80 ? 'at or above' : 'below'} the 80% mark DB publishes as its long-distance target.`);
+}
+
+/* The API names the bands but does not carry their bounds, so severity is
+   resolved from the band label. Keeping the order here also guarantees the axis
+   reads as an ordinal scale rather than whatever order SQL returned. */
+const BANDS = [
+  { band: 'early',            lower: -60 },
+  { band: 'on time (<6 min)', lower: 0 },
+  { band: '6-15 min',         lower: 360 },
+  { band: '15-30 min',        lower: 900 },
+  { band: '30-60 min',        lower: 1800 },
+  { band: '60+ min',          lower: 3600 },
+];
+
+function renderDistribution(rows) {
+  if (!rows || !rows.length) { showEmpty('chart-distribution', 'No observations yet', 'Delay bands appear once the collector has stored its first poll.'); return; }
+  clearEmpty('chart-distribution');
+  const instance = chart('chart-distribution');
+  if (!instance) return;
+
+  const byBand = new Map(rows.map((r) => [r.band, r.stops || 0]));
+  const ordered = BANDS.filter((b) => byBand.has(b.band))
+    .map((b) => ({ ...b, stops: byBand.get(b.band) }));
+  const total = ordered.reduce((sum, r) => sum + r.stops, 0) || 1;
+
+  instance.setOption({
+    animation: !REDUCED, animationDuration: 400,
+    tooltip: baseTooltip({ trigger: 'item', formatter: (p) => `${p.name}<br/><b>${p.value.toLocaleString()}</b> calls (${fmt((p.value / total) * 100)}%)` }),
+    grid: baseGrid({ left: 8, bottom: 34 }),
+    xAxis: {
+      type: 'category', data: ordered.map((r) => r.band),
+      axisLabel: { ...AXIS_LABEL, interval: 0, rotate: 22, hideOverlap: false },
+      axisLine: { lineStyle: { color: C.line } }, axisTick: { show: false },
+    },
+    yAxis: valueAxis('calls'),
+    series: [{
+      type: 'bar',
+      data: ordered.map((r) => ({ value: r.stops, itemStyle: { color: severityColor(r.lower) } })),
+      barMaxWidth: 46,
+      itemStyle: { borderRadius: [4, 4, 0, 0] },   // 4px rounded data-end on the baseline
+    }],
+  });
+
+  const late = ordered.filter((r) => r.lower >= 360).reduce((s, r) => s + r.stops, 0);
+  const pct = (late / total) * 100;
+  const biggest = ordered.reduce((a, b) => (a.stops > b.stops ? a : b));
+  setReading('read-distribution', pct > 20 ? 'bad' : pct > 10 ? 'warn' : 'good',
+    `${fmt(pct)}% of observed calls are 6 minutes late or worse (${late.toLocaleString()} of ${total.toLocaleString()}). ` +
+    `Most of the network sits in the "${biggest.band}" band.`);
 }
 
 function renderStations(rows) {
-  const ordered = [...rows].reverse();   // ECharts y-axis builds bottom-up.
-  chart('chart-stations').setOption({
-    ...BASE_OPTION,
-    grid: { left: 132, right: 40, top: 10, bottom: 24 },
-    tooltip: {
-      ...BASE_OPTION.tooltip, trigger: 'item',
-      formatter: (p) => `${p.name}<br/><b>${p.value.toFixed(1)} min</b> mean · ${ordered[p.dataIndex].observations} obs`,
+  if (!rows || !rows.length) { showEmpty('chart-stations', 'No station data yet', 'Stations rank once at least two observations exist per station.'); return; }
+  clearEmpty('chart-stations');
+  const instance = chart('chart-stations');
+  if (!instance) return;
+
+  const ordered = [...rows].sort((a, b) => a.mean_delay_seconds - b.mean_delay_seconds).slice(-12);
+
+  instance.setOption({
+    animation: !REDUCED, animationDuration: 400,
+    tooltip: baseTooltip({ trigger: 'item', formatter: (p) => `${p.name}<br/><b>${fmt(p.value)} min</b> mean delay` }),
+    grid: baseGrid({ left: 8, right: 34 }),
+    xAxis: valueAxis('min'),
+    yAxis: {
+      type: 'category', data: ordered.map((r) => r.stop_name),
+      axisLabel: { ...AXIS_LABEL, width: 116, overflow: 'truncate' },
+      axisLine: { show: false }, axisTick: { show: false },
     },
-    xAxis: { type: 'value', name: 'min', nameTextStyle: { color: PALETTE.mute, fontSize: 10 }, ...AXIS },
-    yAxis: { type: 'category', data: ordered.map((r) => r.stop_name), ...AXIS,
-      splitLine: { show: false }, axisLabel: { ...AXIS.axisLabel, fontSize: 10.5, width: 122, overflow: 'truncate' } },
     series: [{
       type: 'bar',
-      data: ordered.map((r) => ({
-        value: +minutes(r.mean_delay_seconds).toFixed(2),
-        itemStyle: { color: delayColour(r.mean_delay_seconds), borderRadius: [0, 4, 4, 0] },
-      })),
+      // One hue for every bar: length already encodes the value, so hue stays
+      // free rather than re-encoding what the reader can already see.
+      data: ordered.map((r) => minutes(r.mean_delay_seconds)),
+      itemStyle: { color: C.ice, borderRadius: [0, 4, 4, 0] },
       barMaxWidth: 13,
+      label: { show: true, position: 'right', color: C.ink2, fontSize: 10.5, formatter: (p) => fmt(p.value) },
     }],
   });
+
+  const worst = ordered[ordered.length - 1];
+  setReading('read-stations', minutes(worst.mean_delay_seconds) > 10 ? 'bad' : 'warn',
+    `${worst.stop_name} is the worst-performing station in this window at ${fmt(minutes(worst.mean_delay_seconds))} min mean delay ` +
+    `over ${worst.observations} observations.`);
 }
 
 function renderCategories(rows) {
-  chart('chart-categories').setOption({
-    ...BASE_OPTION,
-    grid: { left: 44, right: 46, top: 30, bottom: 28 },
-    tooltip: { ...BASE_OPTION.tooltip, trigger: 'axis' },
-    legend: { data: ['Mean delay', 'Punctuality'], textStyle: { color: PALETTE.dim, fontSize: 11 },
-      itemWidth: 14, itemHeight: 8, top: 0, right: 0 },
-    xAxis: { type: 'category', data: rows.map((r) => r.route_category), ...AXIS, splitLine: { show: false } },
-    yAxis: [
-      { type: 'value', name: 'min', nameTextStyle: { color: PALETTE.mute, fontSize: 10 }, ...AXIS },
-      { type: 'value', name: '%', min: 0, max: 100, position: 'right',
-        nameTextStyle: { color: PALETTE.mute, fontSize: 10 }, ...AXIS, splitLine: { show: false } },
-    ],
-    series: [
-      {
-        name: 'Mean delay', type: 'bar', barMaxWidth: 40,
-        data: rows.map((r) => ({
-          value: +minutes(r.mean_delay_seconds).toFixed(2),
-          itemStyle: { color: delayColour(r.mean_delay_seconds), borderRadius: [4, 4, 0, 0] },
-        })),
-      },
-      {
-        name: 'Punctuality', type: 'line', yAxisIndex: 1, smooth: true,
-        data: rows.map((r) => r.punctuality_pct),
-        lineStyle: { width: 2, color: PALETTE.cyan }, itemStyle: { color: PALETTE.cyan }, symbolSize: 7,
-      },
-    ],
-  });
-}
+  if (!rows || !rows.length) { showEmpty('chart-categories', 'No product data yet', 'Breakdown appears once trains from more than one product are tracked.'); return; }
+  clearEmpty('chart-categories');
+  const instance = chart('chart-categories');
+  if (!instance) return;
 
-function renderPropagation(rows, label) {
-  document.getElementById('prop-hint').textContent = label || 'select a train';
-  chart('chart-propagation').setOption({
-    ...BASE_OPTION,
-    grid: { left: 46, right: 20, top: 20, bottom: 58 },
-    tooltip: { ...BASE_OPTION.tooltip, trigger: 'axis' },
-    xAxis: { type: 'category', data: rows.map((r) => r.stop_name), ...AXIS, splitLine: { show: false },
-      axisLabel: { ...AXIS.axisLabel, rotate: 30, interval: 0, width: 90, overflow: 'truncate' } },
-    yAxis: { type: 'value', name: 'min', nameTextStyle: { color: PALETTE.mute, fontSize: 10 }, ...AXIS },
+  instance.setOption({
+    animation: !REDUCED, animationDuration: 400,
+    tooltip: baseTooltip({ trigger: 'item', formatter: (p) => `${p.name}<br/><b>${fmt(p.value)} min</b> mean delay` }),
+    grid: baseGrid({ left: 8 }),
+    xAxis: { type: 'category', data: rows.map((r) => r.route_category), axisLabel: { ...AXIS_LABEL, fontSize: 12, fontWeight: 600 }, axisLine: { lineStyle: { color: C.line } }, axisTick: { show: false } },
+    yAxis: valueAxis('min'),
     series: [{
-      type: 'line', smooth: 0.3, symbol: 'circle', symbolSize: 8,
-      data: rows.map((r) => ({
-        value: +minutes(r.arrival_delay ?? r.departure_delay).toFixed(2),
-        itemStyle: { color: delayColour(r.arrival_delay ?? r.departure_delay ?? 0) },
-      })),
-      lineStyle: { width: 2.6, color: PALETTE.violet },
-      areaStyle: {
-        color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
-          { offset: 0, color: 'rgba(139,124,246,.34)' },
-          { offset: 1, color: 'rgba(139,124,246,.02)' },
-        ]),
-      },
-      markLine: {
-        silent: true, symbol: 'none',
-        data: [{ yAxis: 6 }],   // DB's 6-minute punctuality threshold.
-        lineStyle: { color: 'rgba(255,176,32,.6)', type: 'dashed' },
-        label: { formatter: 'punctuality threshold', color: PALETTE.mute, fontSize: 10 },
-      },
+      type: 'bar', barMaxWidth: 52,
+      data: rows.map((r) => ({ value: minutes(r.mean_delay_seconds), itemStyle: { color: categoryColor(r.route_category), borderRadius: [4, 4, 0, 0] } })),
+      label: { show: true, position: 'top', color: C.ink2, fontSize: 10.5, formatter: (p) => fmt(p.value) },
     }],
   });
+
+  const sorted = [...rows].sort((a, b) => b.mean_delay_seconds - a.mean_delay_seconds);
+  setReading('read-categories', 'good',
+    `${sorted[0].route_category} is running worst at ${fmt(minutes(sorted[0].mean_delay_seconds))} min mean delay; ` +
+    `${sorted[sorted.length - 1].route_category} is best at ${fmt(minutes(sorted[sorted.length - 1].mean_delay_seconds))} min.`);
+}
+
+/* The API reports arrival and departure delay separately and leaves both null
+   where it has no prediction (typically a trip's first and last calls). Those
+   are dropped rather than plotted as zero, which would read as "on time". */
+const callDelay = (row) => (row.arrival_delay ?? row.departure_delay ?? null);
+
+function renderPropagation(rows, label) {
+  rows = (rows || []).filter((r) => callDelay(r) !== null);
+  if (!rows || rows.length < 2) {
+    showEmpty('chart-propagation', 'Select a service', 'Choose a row from the table to trace how its delay builds along the route.');
+    return;
+  }
+  clearEmpty('chart-propagation');
+  const instance = chart('chart-propagation');
+  if (!instance) return;
+
+  instance.setOption({
+    animation: !REDUCED, animationDuration: 500,
+    tooltip: baseTooltip({ valueFormatter: (v) => `${fmt(v)} min` }),
+    grid: baseGrid({ bottom: 52 }),
+    xAxis: {
+      type: 'category', data: rows.map((r) => r.stop_name),
+      axisLabel: { ...AXIS_LABEL, rotate: 32, width: 84, overflow: 'truncate', hideOverlap: true },
+      axisLine: { lineStyle: { color: C.line } }, axisTick: { show: false },
+    },
+    yAxis: valueAxis('min'),
+    series: [{
+      type: 'line', data: rows.map((r) => minutes(callDelay(r))),
+      smooth: 0.2, symbolSize: 8,
+      lineStyle: { width: 2.5, color: C.d2 },
+      itemStyle: { color: C.d2, borderColor: C.panel, borderWidth: 2 },
+      areaStyle: { color: { type: 'linear', x: 0, y: 0, x2: 0, y2: 1, colorStops: [
+        { offset: 0, color: `${C.d2}30` }, { offset: 1, color: `${C.d2}00` }] } },
+    }],
+  });
+
+  const first = minutes(callDelay(rows[0]));
+  const last = minutes(callDelay(rows[rows.length - 1]));
+  const gained = last - first;
+  setReading('read-propagation', gained > 5 ? 'bad' : gained > 1 ? 'warn' : 'good',
+    `${label} left its first tracked stop ${fmt(first)} min late and is ${fmt(last)} min late by ${rows[rows.length - 1].stop_name}. ` +
+    (Math.abs(gained) < 1 ? 'It is holding its delay rather than compounding it.'
+      : gained > 0 ? `It has picked up ${fmt(gained)} min more along the way.`
+      : `It has recovered ${fmt(-gained)} min en route.`));
 }
 
 function renderWorstTrips(rows) {
-  const tbody = document.getElementById('worst-trips');
-  tbody.innerHTML = rows.map((r) => `
-    <tr data-trip="${r.trip_id}" class="${r.trip_id === selectedTrip ? 'active' : ''}">
-      <td><span class="badge ${r.route_category || ''}">${r.route_category || '—'}</span></td>
-      <td class="route-cell">${r.route_name || r.trip_id}</td>
-      <td class="delay-cell ${delayClass(r.max_delay_seconds)}">+${Math.round(minutes(r.max_delay_seconds))}′</td>
-    </tr>`).join('');
+  const body = $('worst-trips');
+  if (!body) return;
+  if (!rows || !rows.length) {
+    body.innerHTML = '<tr><td colspan="4"><div class="empty"><strong>Nothing delayed</strong><span>No service is currently reporting a delay.</span></div></td></tr>';
+    return;
+  }
+  body.innerHTML = rows.map((r) => {
+    const colour = severityColor(r.max_delay_seconds);
+    return `<tr tabindex="0" role="button" data-trip="${r.trip_id}" data-label="${r.route_name || r.trip_id}"
+                aria-label="Trace ${r.route_name || r.trip_id}">
+      <td>${r.route_name || r.trip_id}</td>
+      <td><span class="tag" style="color:${categoryColor(r.route_category)}">${r.route_category || '—'}</span></td>
+      <td class="num">${r.stops ?? '—'}</td>
+      <td class="num" style="color:${colour}">+${fmt(minutes(r.max_delay_seconds), 0)}</td>
+    </tr>`;
+  }).join('');
 
-  tbody.querySelectorAll('tr').forEach((row) => {
-    row.addEventListener('click', () => selectTrip(row.dataset.trip));
-  });
-
-  // Keep showing something useful before the user has picked anything.
-  if (!selectedTrip && rows.length) selectTrip(rows[0].trip_id);
-}
-
-async function selectTrip(tripId) {
-  selectedTrip = tripId;
-  document.querySelectorAll('.trips tr').forEach((row) => {
-    row.classList.toggle('active', row.dataset.trip === tripId);
-  });
-  try {
-    const response = await fetch(`/api/trips/${encodeURIComponent(tripId)}/propagation`);
-    if (!response.ok) return;
-    const rows = await response.json();
-    renderPropagation(rows, `${rows[0]?.route_category || ''} ${tripId}`.trim());
-  } catch (err) {
-    console.warn('propagation fetch failed', err);
+  // Trace the worst service by default: an empty panel on load teaches nothing,
+  // and the top row is the one a reader would click anyway. Only on first
+  // population, so a live push never yanks the chart off the user's choice.
+  if (!selectedTrip) {
+    const first = body.querySelector('tr[data-trip]');
+    if (first) selectRow(first);
+  } else {
+    const still = body.querySelector(`tr[data-trip="${CSS.escape(selectedTrip)}"]`);
+    if (still) still.setAttribute('aria-selected', 'true');
   }
 }
 
-// ---------------------------------------------------------------------------
-// live wiring
-// ---------------------------------------------------------------------------
+function renderImportance(model) {
+  if (!model || !model.feature_importance || !model.feature_importance.length) {
+    showEmpty('chart-importance', 'Model not trained yet',
+      'Run <code>make train</code> once the warehouse has a few hundred observations.');
+    return;
+  }
+  clearEmpty('chart-importance');
+  const instance = chart('chart-importance');
+  if (!instance) return;
 
-function applyPayload(data) {
-  const p = data.summary.punctuality;
-  setCounter('punctuality', p.punctuality_pct, 1);
-  setCounter('meandelay', minutes(p.mean_delay_seconds), 1);
-  setCounter('trips', p.trips);
-  setCounter('maxdelay', Math.round(minutes(p.max_delay_seconds)));
-  setCounter('observations', data.summary.observations_stored);
+  const rows = [...model.feature_importance].sort((a, b) => a.importance - b.importance);
 
-  const cancelled = data.cancellations;
-  setCounter('skipped', cancelled.skipped_stops);
-  document.getElementById('skipped-sub').textContent =
-    `${cancelled.skipped_pct}% of calls · ${cancelled.affected_trips} services`;
-  document.getElementById('punct-bar').style.width = `${p.punctuality_pct}%`;
+  instance.setOption({
+    animation: !REDUCED, animationDuration: 400,
+    tooltip: baseTooltip({ trigger: 'item', formatter: (p) => `${p.name}<br/><b>${fmt(p.value * 100)}%</b> of model gain` }),
+    grid: baseGrid({ left: 8, right: 40 }),
+    xAxis: valueAxis('share', { axisLabel: { ...AXIS_LABEL, formatter: (v) => `${Math.round(v * 100)}%` } }),
+    yAxis: { type: 'category', data: rows.map((r) => r.feature), axisLabel: { ...AXIS_LABEL, width: 120, overflow: 'truncate' }, axisLine: { show: false }, axisTick: { show: false } },
+    series: [{
+      type: 'bar', data: rows.map((r) => r.importance),
+      itemStyle: { color: C.ec, borderRadius: [0, 4, 4, 0] }, barMaxWidth: 13,
+      label: { show: true, position: 'right', color: C.ink2, fontSize: 10.5, formatter: (p) => `${Math.round(p.value * 100)}%` },
+    }],
+  });
 
-  const source = data.summary.source;
-  document.getElementById('source-label').textContent = source.label;
-  document.getElementById('lineage').classList.toggle('official', source.official);
-  document.getElementById('feed-clock').textContent = clockTime(data.summary.feed.feed_timestamp);
-
-  const feed = data.summary.feed;
-  document.getElementById('feed-stats').textContent =
-    `poll ${feed.duration_ms} ms · ${feed.entity_count.toLocaleString()} entities · ` +
-    `${feed.long_distance_trips} long-distance · ${feed.rows_written} rows`;
-
-  renderTimeseries(data.timeseries);
-  renderMap(data.network);
-  renderDistribution(data.distribution);
-  renderStations(data.stations);
-  renderCategories(data.categories);
-  renderWorstTrips(data.worst_trips);
+  const top = rows[rows.length - 1];
+  // Reported plainly in both directions. On stop-to-stop delay, "assume no
+  // change" is a genuinely strong baseline, and a panel that only ever says
+  // the model won would be advertising rather than measuring.
+  const beat = model.beats_baseline;
+  const comparison = model.mae_seconds
+    ? `Cross-validated MAE ${fmt(minutes(model.mae_seconds))} min vs a ${fmt(minutes(model.baseline_mae_seconds))} min persistence baseline` +
+      (beat ? `, ${fmt(Math.abs(model.improvement_pct))}% better.` : `, so persistence still wins by ${fmt(Math.abs(model.improvement_pct))}%.`)
+    : '';
+  setReading('read-model', beat ? 'good' : 'warn',
+    `Strongest signal is ${top.feature} (${Math.round(top.importance * 100)}% of measured importance). ${comparison}`);
 }
+
+function renderIngestion(polls) {
+  if (!polls || polls.length < 2) { showEmpty('chart-ingestion', 'No polls recorded yet', 'Start the collector with <code>python -m dbrt</code>.'); return; }
+  clearEmpty('chart-ingestion');
+  const instance = chart('chart-ingestion');
+  if (!instance) return;
+
+  instance.setOption({
+    animation: !REDUCED, animationDuration: 400,
+    tooltip: baseTooltip(),
+    legend: { data: ['Rows written', 'Fetch duration'], top: 0, right: 0, textStyle: { color: C.ink2, fontSize: 11 }, itemWidth: 14, itemHeight: 2, icon: 'rect' },
+    grid: baseGrid({ top: 34 }),
+    xAxis: timeAxis(),
+    // Two measures of different scale, indexed against their own maximum so
+    // they share one axis instead of inventing a second.
+    yAxis: valueAxis('% of window max', { max: 100 }),
+    series: ['rows_written', 'duration_ms'].map((key, i) => {
+      const max = Math.max(...polls.map((p) => p[key] || 0)) || 1;
+      return {
+        name: i === 0 ? 'Rows written' : 'Fetch duration',
+        type: 'line', showSymbol: false, smooth: 0.25,
+        data: polls.map((p) => [p.fetched_at, ((p[key] || 0) / max) * 100]),
+        // Two real categorical slots: C.oth is a muted text token and sits
+        // below the chroma floor, so it cannot carry series identity.
+        // itemStyle drives the legend swatch, lineStyle the drawn line; both.
+        itemStyle: { color: i === 0 ? C.ice : C.ece },
+        lineStyle: { width: 2, color: i === 0 ? C.ice : C.ece },
+      };
+    }),
+  });
+
+  const latest = polls[polls.length - 1];
+  const errors = polls.filter((p) => p.error).length;
+  setReading('read-ingestion', errors ? 'warn' : 'good',
+    `Last poll wrote ${(latest.rows_written || 0).toLocaleString()} rows in ${latest.duration_ms || 0} ms. ` +
+    (errors ? `${errors} of the last ${polls.length} polls reported an error.` : `No errors in the last ${polls.length} polls.`));
+}
+
+/* --- map ------------------------------------------------------------------ */
+
+const TrainMap = {
+  map: null,
+  ready: false,
+  current: new Map(),   // trip_id -> {lat, lon} being displayed
+  target: new Map(),    // trip_id -> {lat, lon} most recently received
+  meta: new Map(),
+  lastUpdate: 0,
+  raf: null,
+
+  init() {
+    if (!window.maplibregl) return this.unavailable('Map library failed to load.');
+    // MapLibre needs WebGL. Headless renderers and locked-down browsers do not
+    // have it, and this used to throw straight out of boot().
+    if (typeof maplibregl.supported === 'function' && !maplibregl.supported()) {
+      return this.unavailable('This browser has no WebGL, so the map cannot draw.');
+    }
+
+    this.map = new maplibregl.Map({
+      container: 'map',
+      style: 'https://tiles.openfreemap.org/styles/dark',
+      center: [10.2, 51.1],
+      zoom: 5.15,
+      attributionControl: { compact: true },
+      // Without this the wheel zooms the map instead of scrolling the page, so
+      // the dashboard traps the reader the moment the cursor crosses the map.
+      cooperativeGestures: true,
+      // Tiles are the one remote dependency; fail soft rather than throwing.
+      transformRequest: (url) => ({ url }),
+    });
+
+    this.map.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'top-left');
+    this.map.on('load', () => this.onLoad());
+    this.map.on('error', (e) => {
+      // A tile failure must not take the trains down with it.
+      console.warn('map resource failed', e && e.error && e.error.message);
+    });
+  },
+
+  /* The map is one panel, not the page. If it cannot start, say so in its own
+     panel and let every other chart carry on. */
+  unavailable(reason) {
+    const host = $('map');
+    if (host) {
+      host.innerHTML =
+        `<div class="empty"><strong>Map unavailable</strong><span>${reason} ` +
+        `Every other panel on this page still works.</span></div>`;
+    }
+    const count = $('map-train-count');
+    if (count) count.textContent = '—';
+  },
+
+  onLoad() {
+    this.ready = true;
+    this.tintBasemap();
+
+    this.map.addSource('rail', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
+    this.map.addLayer({
+      id: 'rail-line', type: 'line', source: 'rail',
+      paint: { 'line-color': '#3a4a63', 'line-width': ['interpolate', ['linear'], ['zoom'], 4, 0.4, 8, 1.4], 'line-opacity': 0.75 },
+    });
+
+    this.map.addSource('stations', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
+    this.map.addLayer({
+      id: 'station-dot', type: 'circle', source: 'stations',
+      paint: {
+        'circle-radius': ['interpolate', ['linear'], ['zoom'], 4, 1.2, 9, 3.4],
+        'circle-color': '#55677f',
+      },
+    });
+
+    this.map.addSource('trains', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
+    this.map.addLayer({
+      id: 'train-glow', type: 'circle', source: 'trains',
+      paint: {
+        'circle-radius': ['interpolate', ['linear'], ['zoom'], 4, 6, 9, 15],
+        'circle-color': ['get', 'color'], 'circle-opacity': 0.16, 'circle-blur': 0.6,
+      },
+    });
+    this.map.addLayer({
+      id: 'train-dot', type: 'circle', source: 'trains',
+      paint: {
+        'circle-radius': ['interpolate', ['linear'], ['zoom'], 4, 2.6, 9, 5.5],
+        'circle-color': ['get', 'color'],
+        'circle-stroke-width': 1.2,
+        'circle-stroke-color': '#0b0f16',   // 2px surface ring keeps overlaps readable
+      },
+    });
+
+    this.map.on('click', 'train-dot', (e) => this.showPopup(e));
+    this.map.on('mouseenter', 'train-dot', () => { this.map.getCanvas().style.cursor = 'pointer'; });
+    this.map.on('mouseleave', 'train-dot', () => { this.map.getCanvas().style.cursor = ''; });
+
+    this.loadGeometry();
+    this.tick();
+  },
+
+  /* Nudge the off-the-shelf dark basemap toward the dashboard's slate so the
+     map reads as part of the page rather than an embed. */
+  tintBasemap() {
+    const recolour = { background: '#0b0f16', water: '#0e141d' };
+    for (const layer of this.map.getStyle().layers || []) {
+      const target = recolour[layer.id] || (layer.id.includes('water') ? recolour.water : null);
+      if (!target) continue;
+      try {
+        if (layer.type === 'background') this.map.setPaintProperty(layer.id, 'background-color', target);
+        if (layer.type === 'fill') this.map.setPaintProperty(layer.id, 'fill-color', target);
+      } catch { /* style layer vocabulary varies; skip what does not apply */ }
+    }
+  },
+
+  async loadGeometry() {
+    try {
+      const [rail, stations] = await Promise.all([
+        fetch('/api/geo/network').then((r) => r.json()),
+        fetch('/api/geo/stations?min_calls=6').then((r) => r.json()),
+      ]);
+      if (this.map.getSource('rail')) this.map.getSource('rail').setData(rail);
+      if (this.map.getSource('stations')) this.map.getSource('stations').setData(stations);
+    } catch (err) {
+      console.warn('network geometry unavailable', err);
+    }
+  },
+
+  setPositions(positions) {
+    if (!positions) return;
+    const seen = new Set();
+    for (const p of positions) {
+      seen.add(p.trip_id);
+      this.target.set(p.trip_id, { lat: p.lat, lon: p.lon });
+      this.meta.set(p.trip_id, p);
+      if (!this.current.has(p.trip_id)) this.current.set(p.trip_id, { lat: p.lat, lon: p.lon });
+    }
+    for (const id of [...this.current.keys()]) {
+      if (!seen.has(id)) { this.current.delete(id); this.target.delete(id); this.meta.delete(id); }
+    }
+    this.lastUpdate = performance.now();
+    const count = $('map-train-count');
+    if (count) count.textContent = positions.length.toLocaleString();
+    if (REDUCED) { for (const [id, t] of this.target) this.current.set(id, { ...t }); this.paint(); }
+  },
+
+  /* Lerp displayed positions toward their targets across the push interval, so
+     trains glide instead of jumping every ten seconds. */
+  tick() {
+    if (REDUCED) return;
+    const step = () => {
+      const t = Math.min(1, (performance.now() - this.lastUpdate) / PUSH_MS);
+      for (const [id, target] of this.target) {
+        const cur = this.current.get(id);
+        if (!cur) { this.current.set(id, { ...target }); continue; }
+        cur.lat += (target.lat - cur.lat) * 0.08 * (1 + t);
+        cur.lon += (target.lon - cur.lon) * 0.08 * (1 + t);
+      }
+      this.paint();
+      this.raf = requestAnimationFrame(step);
+    };
+    this.raf = requestAnimationFrame(step);
+  },
+
+  paint() {
+    if (!this.ready || !this.map.getSource('trains')) return;
+    const features = [];
+    for (const [id, pos] of this.current) {
+      const m = this.meta.get(id) || {};
+      features.push({
+        type: 'Feature',
+        properties: {
+          trip_id: id,
+          color: severityColor(m.delay_seconds),
+          label: m.route_name || id,
+          delay: Math.round(minutes(m.delay_seconds)),
+          from: m.from_stop || '', to: m.to_stop || '',
+        },
+        geometry: { type: 'Point', coordinates: [pos.lon, pos.lat] },
+      });
+    }
+    this.map.getSource('trains').setData({ type: 'FeatureCollection', features });
+  },
+
+  showPopup(e) {
+    const p = e.features[0].properties;
+    new maplibregl.Popup({ closeButton: false, offset: 12, className: 'train-popup' })
+      .setLngLat(e.lngLat)
+      .setHTML(
+        `<div style="font:600 12.5px Inter,sans-serif;color:#eef2f8">${p.label}</div>` +
+        `<div style="font:400 11.5px Inter,sans-serif;color:#a8b6ca;margin-top:3px">${p.from} → ${p.to}</div>` +
+        `<div style="font:600 11.5px ui-monospace,monospace;color:${p.color};margin-top:4px">${p.delay >= 0 ? '+' : ''}${p.delay} min</div>`)
+      .addTo(this.map);
+  },
+};
+
+function renderLegend() {
+  const host = $('map-legend');
+  if (!host) return;
+  // The severity ramp is multi-hue semantic heat, so it ships with this scale
+  // legend rather than relying on hue being self-evident.
+  host.innerHTML = SEVERITY.map((band) =>
+    `<div class="legend-row"><i style="background:${band.color}"></i>${band.label}</div>`).join('');
+}
+
+/* --- time slider ---------------------------------------------------------- */
+
+const Timeline = {
+  window: { start: null, end: null },
+  live: true,
+  playing: false,
+  timer: null,
+
+  init() {
+    const slider = $('time-slider');
+    const liveBtn = $('btn-live');
+    const playBtn = $('btn-play');
+
+    slider.addEventListener('input', () => {
+      this.live = false;
+      this.stop();
+      this.reflectMode();
+      this.seek(Number(slider.value));
+    });
+
+    liveBtn.addEventListener('click', () => {
+      this.live = true;
+      this.stop();
+      slider.value = 100;
+      this.reflectMode();
+    });
+
+    playBtn.addEventListener('click', () => (this.playing ? this.stop() : this.play()));
+  },
+
+  setWindow(w) {
+    if (!w || !w.start) return;
+    this.window = w;
+    const start = $('tb-start');
+    if (start) start.textContent = clockTime(w.start);
+  },
+
+  instantFor(pct) {
+    if (!this.window.start || !this.window.end) return null;
+    const a = new Date(this.window.start).getTime();
+    const b = new Date(this.window.end).getTime();
+    return new Date(a + (b - a) * (pct / 100));
+  },
+
+  async seek(pct) {
+    const instant = this.instantFor(pct);
+    if (!instant) return;
+    const readout = $('tb-current');
+    if (readout) readout.textContent = clockTime(instant.toISOString());
+    try {
+      const body = await fetch(`/api/positions?at=${encodeURIComponent(instant.toISOString())}`).then((r) => r.json());
+      TrainMap.setPositions(body.positions);
+    } catch (err) {
+      console.warn('history seek failed', err);
+    }
+  },
+
+  play() {
+    if (!this.window.start) return;
+    this.live = false;
+    this.playing = true;
+    const slider = $('time-slider');
+    if (Number(slider.value) >= 100) slider.value = 0;
+    this.reflectMode();
+    this.timer = setInterval(() => {
+      const next = Number(slider.value) + 1;
+      if (next > 100) { this.stop(); return; }
+      slider.value = next;
+      this.seek(next);
+    }, 700);
+  },
+
+  stop() {
+    this.playing = false;
+    if (this.timer) { clearInterval(this.timer); this.timer = null; }
+    this.reflectMode();
+  },
+
+  reflectMode() {
+    const liveBtn = $('btn-live');
+    const playBtn = $('btn-play');
+    const mode = $('tb-mode');
+    const readout = $('tb-current');
+
+    liveBtn.classList.toggle('is-live', this.live);
+    liveBtn.setAttribute('aria-pressed', String(this.live));
+    playBtn.textContent = this.playing ? 'Pause' : 'Replay';
+    if (mode) mode.textContent = this.live ? 'following feed' : this.playing ? 'replaying' : 'history';
+    if (this.live && readout) readout.textContent = 'LIVE';
+  },
+};
+
+/* --- payload wiring ------------------------------------------------------- */
+
+const history = { punctuality: [], delay: [], trips: [] };
+
+function pushHistory(key, value) {
+  if (value === null || value === undefined || Number.isNaN(value)) return;
+  history[key].push(value);
+  if (history[key].length > 40) history[key].shift();
+}
+
+let selectedTrip = null;
+let lastFeedTimestamp = null;
+
+function apply(payload) {
+  const summary = payload.summary || {};
+  const punctuality = summary.punctuality || {};
+  const feed = summary.feed || {};
+
+  // Header
+  const sourceLabel = $('source-label');
+  if (sourceLabel && summary.source) {
+    sourceLabel.textContent = summary.source.label;
+    $('lineage').classList.toggle('official', !!summary.source.official);
+  }
+  lastFeedTimestamp = feed.feed_timestamp || lastFeedTimestamp;
+  $('feed-clock').textContent = clockTime(lastFeedTimestamp);
+  $('data-age').textContent = relativeAge(lastFeedTimestamp);
+
+  // Metrics
+  setCounter('punctuality', punctuality.punctuality_pct, 1);
+  setCounter('meandelay', minutes(punctuality.mean_delay_seconds), 1);
+  setCounter('trips', (payload.positions || []).length, 0);
+  setCounter('maxdelay', Math.round(minutes(punctuality.max_delay_seconds)), 0);
+  setCounter('skipped', (payload.cancellations || {}).skipped_stops, 0);
+  setCounter('observations', summary.observations_stored, 0);
+
+  pushHistory('punctuality', punctuality.punctuality_pct);
+  pushHistory('delay', minutes(punctuality.mean_delay_seconds));
+  pushHistory('trips', (payload.positions || []).length);
+  sparkline('spark-punctuality', history.punctuality, C.ok);
+  sparkline('spark-delay', history.delay, C.d2);
+  sparkline('spark-trips', history.trips, C.ice);
+
+  // Charts
+  renderTimeseries(payload.timeseries);
+  renderPunctuality(payload.timeseries);
+  renderDistribution(payload.distribution);
+  renderStations(payload.stations);
+  renderCategories(payload.categories);
+  renderWorstTrips(payload.worst_trips);
+  if (payload.polls) renderIngestion(payload.polls);
+
+  // Map: only follow the feed when the user has not scrubbed away from live.
+  Timeline.setWindow(payload.history_window);
+  if (Timeline.live) TrainMap.setPositions(payload.positions);
+
+  const stats = $('feed-stats');
+  if (stats) {
+    stats.textContent = `${(feed.entity_count || 0).toLocaleString()} entities · ` +
+      `${(feed.long_distance_trips || 0).toLocaleString()} long-distance · ${feed.duration_ms || 0} ms`;
+  }
+}
+
+async function loadModel() {
+  try {
+    const model = await fetch('/api/model').then((r) => r.json());
+    renderImportance(model);
+    const info = $('model-info');
+    if (info) {
+      info.textContent = model.trained_at
+        ? `Delay model: ${model.algorithm}, MAE ${fmt(minutes(model.mae_seconds))} min, trained ${new Date(model.trained_at).toLocaleString('en-GB')}`
+        : 'Delay model: not trained';
+    }
+  } catch { /* the dashboard is useful without the model */ }
+}
+
+async function loadTrip(tripId, label) {
+  try {
+    const rows = await fetch(`/api/trips/${encodeURIComponent(tripId)}/propagation`).then((r) => r.json());
+    renderPropagation(rows, label);
+    const tag = $('prop-tag');
+    if (tag) { tag.textContent = label; tag.style.color = C.ice; }
+  } catch (err) {
+    console.warn('propagation failed', err);
+  }
+}
+
+document.addEventListener('click', (e) => {
+  const row = e.target.closest('tr[data-trip]');
+  if (!row) return;
+  selectRow(row);
+});
+
+document.addEventListener('keydown', (e) => {
+  const row = e.target.closest && e.target.closest('tr[data-trip]');
+  if (row && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); selectRow(row); }
+});
+
+function selectRow(row) {
+  for (const other of document.querySelectorAll('tr[data-trip]')) other.removeAttribute('aria-selected');
+  row.setAttribute('aria-selected', 'true');
+  selectedTrip = row.dataset.trip;
+  loadTrip(row.dataset.trip, row.dataset.label);
+}
+
+/* --- connection ----------------------------------------------------------- */
 
 function setStatus(state, text) {
-  const el = document.getElementById('status');
-  el.className = `status ${state}`;
-  document.getElementById('status-text').textContent = text;
-}
-
-/* Paint immediately from REST, then let the socket take over. Waiting for the
- * first push left every chart blank on load, and blank forever wherever
- * WebSockets are blocked. */
-async function paintInitialState() {
-  try {
-    applyPayload(await (await fetch('/api/dashboard')).json());
-  } catch (err) {
-    console.warn('initial dashboard fetch failed', err);
-  }
+  const el = $('status');
+  if (!el) return;
+  el.className = `meta-chip status ${state}`;
+  $('status-text').textContent = text;
 }
 
 function connect() {
   const scheme = location.protocol === 'https:' ? 'wss' : 'ws';
   const socket = new WebSocket(`${scheme}://${location.host}/ws`);
 
-  socket.onopen = () => setStatus('live', 'live');
-  socket.onmessage = (event) => {
-    try {
-      applyPayload(JSON.parse(event.data));
-    } catch (err) {
-      console.error('bad payload', err);
-    }
-  };
-  // Retry rather than leaving a dead dashboard on screen after a restart.
-  socket.onclose = () => {
+  socket.addEventListener('open', () => setStatus('live', 'live'));
+  socket.addEventListener('message', (event) => {
+    try { apply(JSON.parse(event.data)); setStatus('live', 'live'); }
+    catch (err) { console.error('bad payload', err); }
+  });
+  socket.addEventListener('close', () => {
     setStatus('down', 'reconnecting');
-    setTimeout(connect, 3000);
-  };
-  socket.onerror = () => socket.close();
+    setTimeout(connect, 3000);   // The dashboard is long-lived; always come back.
+  });
+  socket.addEventListener('error', () => socket.close());
 }
 
-async function loadStationGeo() {
+/* Fall back to polling the REST payload when WebSockets are unavailable. */
+async function pollOnce() {
   try {
-    stationGeo = await (await fetch('/api/stations/geo')).json();
-  } catch (err) {
-    console.warn('station geometry unavailable', err);
+    apply(await fetch('/api/dashboard').then((r) => r.json()));
+    setStatus('live', 'polling');
+  } catch {
+    setStatus('down', 'offline');
   }
 }
 
-async function loadModelInfo() {
+function boot() {
+  renderLegend();
+
+  // Data first, and each optional subsystem isolated. The map used to run
+  // before this and threw on browsers without WebGL, which left the whole
+  // dashboard showing "connecting" forever.
+  pollOnce();                    // First paint without waiting for the socket.
+  loadModel();
+
+  if ('WebSocket' in window) connect();
+  else setInterval(pollOnce, PUSH_MS);
+
   try {
-    const info = await (await fetch('/api/model')).json();
-    // The fold spread is shown deliberately: a single-split number on this
-    // sample size moved by several points run to run.
-    document.getElementById('model-info').textContent = info.trained
-      ? `Delay model (${info.cv_folds}-fold): MAE ${info.mae_seconds}±${info.mae_std_seconds}s ` +
-        `vs persistence ${info.baseline_mae_seconds}s (${info.improvement_pct > 0 ? '+' : ''}${info.improvement_pct}%) · ` +
-        `RMSE ${info.rmse_seconds}s vs ${info.baseline_rmse_seconds}s · ${info.samples} samples`
-      : 'Delay model: not trained';
+    Timeline.init();
   } catch (err) {
-    console.warn('model info unavailable', err);
+    console.error('time slider unavailable', err);
   }
+
+  try {
+    TrainMap.init();
+  } catch (err) {
+    console.error('map unavailable', err);
+    TrainMap.unavailable('The map failed to start.');
+  }
+
+  setInterval(loadModel, 60_000);
+  // Data age keeps counting between pushes so a stalled feed is visible.
+  setInterval(() => {
+    if (lastFeedTimestamp) $('data-age').textContent = relativeAge(lastFeedTimestamp);
+  }, 1000);
+
+  window.addEventListener('resize', () => {
+    for (const instance of charts.values()) instance.resize();
+  });
 }
 
-window.addEventListener('resize', () => Object.values(charts).forEach((c) => c.resize()));
-
-loadStationGeo().then(paintInitialState).then(connect);
-loadModelInfo();
-setInterval(loadModelInfo, 60000);
+document.addEventListener('DOMContentLoaded', boot);
