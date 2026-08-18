@@ -20,7 +20,7 @@ from psycopg2.extras import execute_values
 
 SCHEMA_PATH = Path(__file__).resolve().parent.parent / "db" / "schema.sql"
 
-_TABLES = ("stop_time_updates", "feed_polls", "trips", "routes", "stops")
+_TABLES = ("stop_time_updates", "feed_polls", "stop_times", "trips", "routes", "stops")
 _PAGE_SIZE = 1000
 
 _INSERT_STU = """
@@ -115,6 +115,25 @@ class Warehouse:
                 [(t.trip_id, t.route_id or None, t.service_id) for t in timetable.trips.values()],
                 page_size=1000,
             )
+            # Only present when the timetable was loaded with load_stop_times=True
+            # (the map needs it, the collector does not).
+            calls = [
+                (c.trip_id, c.stop_sequence, c.stop_id, c.arrival_seconds, c.departure_seconds)
+                for trip_calls in timetable.stop_times.values()
+                for c in trip_calls
+                if c.stop_id in timetable.stops
+            ]
+            if calls:
+                execute_values(
+                    cur,
+                    """INSERT INTO stop_times (trip_id, stop_sequence, stop_id, arrival_seconds, departure_seconds)
+                       VALUES %s ON CONFLICT (trip_id, stop_sequence) DO UPDATE SET
+                         stop_id           = EXCLUDED.stop_id,
+                         arrival_seconds   = EXCLUDED.arrival_seconds,
+                         departure_seconds = EXCLUDED.departure_seconds""",
+                    calls,
+                    page_size=1000,
+                )
 
     def record_poll(
         self,
@@ -138,6 +157,11 @@ class Warehouse:
             )
 
     # --- reads -------------------------------------------------------------
+
+    def execute(self, sql: str, params: Iterable = ()) -> None:
+        """Run a statement that returns nothing (DDL, seeds, one-off updates)."""
+        with self.conn.cursor() as cur:
+            cur.execute(sql, tuple(params))
 
     def fetchall(self, sql: str, params: Iterable = ()) -> list[tuple]:
         with self.conn.cursor() as cur:
