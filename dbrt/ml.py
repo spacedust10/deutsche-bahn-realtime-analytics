@@ -7,6 +7,18 @@ The benchmark is deliberately unflattering. "Persistence" (assume the delay
 carries over unchanged) is already a strong predictor for railways, so a model
 that cannot beat it adds nothing. `train()` reports both numbers so the gap is
 always visible rather than assumed.
+
+Two choices here were forced by the measured data rather than picked a priori.
+On the live feed 55% of stop-to-stop deltas are exactly zero while the delay
+itself has a standard deviation near 780s:
+
+  * The target is the *delta* (next_delay - delay), not the absolute next
+    delay. Predicting the absolute value made the learner reconstruct a large
+    already-known quantity, and it lost to persistence by 56%.
+  * The loss is absolute_error, so the model fits the conditional median. With
+    a median delta of zero, that lets it say "no change" — which is the
+    correct answer most of the time — instead of being dragged off zero by the
+    long tail that squared error chases.
 """
 from __future__ import annotations
 
@@ -103,16 +115,20 @@ class DelayModel:
 
         X, y = build_features(pairs)
         self.columns = X.columns
+        # Learn the correction, not the absolute delay: see module docstring.
+        delta = y - X["delay"]
 
-        X_train, X_test, y_train, y_test = train_test_split(
-            X, y, test_size=test_size, random_state=random_state
+        X_train, X_test, d_train, d_test = train_test_split(
+            X, delta, test_size=test_size, random_state=random_state
         )
         self.model = HistGradientBoostingRegressor(
-            max_iter=300, learning_rate=0.08, max_depth=6, random_state=random_state
+            loss="absolute_error", max_iter=300, learning_rate=0.08,
+            max_depth=6, random_state=random_state,
         )
-        self.model.fit(X_train, y_train)
+        self.model.fit(X_train, d_train)
 
-        predicted = self.model.predict(X_test)
+        y_test = d_test + X_test["delay"]
+        predicted = X_test["delay"] + self.model.predict(X_test)
         mae = float(mean_absolute_error(y_test, predicted))
         # Baseline is measured on the same held-out rows, otherwise the
         # comparison flatters whichever split happens to be easier.
@@ -133,7 +149,8 @@ class DelayModel:
         if self.model is None:
             raise RuntimeError("model is not trained")
         X, _ = build_features(pairs, columns=self.columns)
-        return self.model.predict(X)
+        # The model outputs a correction; the caller wants an absolute delay.
+        return np.asarray(X["delay"]) + self.model.predict(X)
 
     def save(self, path: Path | str) -> Path:
         path = Path(path)
