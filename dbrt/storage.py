@@ -12,6 +12,7 @@ restart without corrupting history.
 from __future__ import annotations
 
 import datetime as dt
+import threading
 from collections.abc import Iterable, Sequence
 from pathlib import Path
 
@@ -34,9 +35,33 @@ ON CONFLICT (trip_id, service_date, stop_sequence, feed_timestamp) DO NOTHING
 
 
 class Warehouse:
+    """Thread-affine PostgreSQL access.
+
+    A psycopg2 connection serialises concurrent callers, and this process has
+    several: FastAPI runs sync endpoints in a threadpool while the WebSocket
+    loop queries via asyncio.to_thread. Sharing one connection made those block
+    behind each other. Each thread therefore gets its own, which is simpler than
+    a pool and bounded in practice by the threadpool's own size.
+    """
+
     def __init__(self, dsn: str):
-        self.conn = psycopg2.connect(dsn)
-        self.conn.autocommit = True
+        self.dsn = dsn
+        self._local = threading.local()
+        self._connections: list = []
+        self._lock = threading.Lock()
+        self.conn  # Connect eagerly so an unreachable database fails here.
+
+    @property
+    def conn(self):
+        existing = getattr(self._local, "conn", None)
+        if existing is not None and not existing.closed:
+            return existing
+        conn = psycopg2.connect(self.dsn)
+        conn.autocommit = True
+        self._local.conn = conn
+        with self._lock:
+            self._connections.append(conn)
+        return conn
 
     # --- lifecycle ---------------------------------------------------------
 
@@ -49,7 +74,12 @@ class Warehouse:
             cur.execute(f"TRUNCATE {', '.join(_TABLES)} RESTART IDENTITY CASCADE")
 
     def close(self) -> None:
-        self.conn.close()
+        with self._lock:
+            for conn in self._connections:
+                if not conn.closed:
+                    conn.close()
+            self._connections.clear()
+        self._local.conn = None
 
     # --- writes ------------------------------------------------------------
 

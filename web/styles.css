@@ -146,12 +146,16 @@ h1, h2, h3 { text-wrap: balance; font-weight: 600; letter-spacing: -0.01em; }
 
 /* ---------- metric strip ---------- */
 
+/* Six metrics, so the column count must always divide six: auto-fit would
+   happily produce five and strand the last tile on its own row. */
 .metrics {
   display: grid; gap: 1px;
-  grid-template-columns: repeat(auto-fit, minmax(168px, 1fr));
+  grid-template-columns: repeat(6, 1fr);
   background: var(--line-solid);
   border-bottom: 1px solid var(--line-solid);
 }
+@media (max-width: 1240px) { .metrics { grid-template-columns: repeat(3, 1fr); } }
+@media (max-width: 620px)  { .metrics { grid-template-columns: repeat(2, 1fr); } }
 
 .metric {
   background: var(--page);
@@ -168,7 +172,7 @@ h1, h2, h3 { text-wrap: balance; font-weight: 600; letter-spacing: -0.01em; }
 }
 .metric-value em { font-style: normal; font-size: 12px; color: var(--ink-2); font-weight: 500; }
 .metric-note { font-size: 11px; color: var(--ink-2); }
-.metric-spark { height: 22px; margin-top: 2px; }
+.metric-spark { height: 26px; margin-top: 4px; opacity: 0.9; }
 
 /* ---------- layout ---------- */
 

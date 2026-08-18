@@ -154,7 +154,7 @@ function setCounter(key, value, decimals = 0) {
 }
 
 function sparkline(id, values, color) {
-  if (!values || values.length < 2) return;
+  if (!values || values.length < 4) return;   // fewer points read as a bar, not a trend
   const instance = chart(id);
   if (!instance) return;
   instance.setOption({
@@ -166,7 +166,7 @@ function sparkline(id, values, color) {
       type: 'line', data: values, showSymbol: false, smooth: 0.3,
       lineStyle: { width: 1.5, color },
       areaStyle: { color: { type: 'linear', x: 0, y: 0, x2: 0, y2: 1, colorStops: [
-        { offset: 0, color: `${color}44` }, { offset: 1, color: `${color}00` }] } },
+        { offset: 0, color: `${color}2e` }, { offset: 1, color: `${color}00` }] } },
     }],
   });
 }
@@ -255,33 +255,53 @@ function renderPunctuality(rows) {
     `${latest >= 80 ? 'at or above' : 'below'} the 80% mark DB publishes as its long-distance target.`);
 }
 
+/* The API names the bands but does not carry their bounds, so severity is
+   resolved from the band label. Keeping the order here also guarantees the axis
+   reads as an ordinal scale rather than whatever order SQL returned. */
+const BANDS = [
+  { band: 'early',            lower: -60 },
+  { band: 'on time (<6 min)', lower: 0 },
+  { band: '6-15 min',         lower: 360 },
+  { band: '15-30 min',        lower: 900 },
+  { band: '30-60 min',        lower: 1800 },
+  { band: '60+ min',          lower: 3600 },
+];
+
 function renderDistribution(rows) {
   if (!rows || !rows.length) { showEmpty('chart-distribution', 'No observations yet', 'Delay bands appear once the collector has stored its first poll.'); return; }
   clearEmpty('chart-distribution');
   const instance = chart('chart-distribution');
   if (!instance) return;
 
-  const total = rows.reduce((sum, r) => sum + r.count, 0) || 1;
+  const byBand = new Map(rows.map((r) => [r.band, r.stops || 0]));
+  const ordered = BANDS.filter((b) => byBand.has(b.band))
+    .map((b) => ({ ...b, stops: byBand.get(b.band) }));
+  const total = ordered.reduce((sum, r) => sum + r.stops, 0) || 1;
 
   instance.setOption({
     animation: !REDUCED, animationDuration: 400,
     tooltip: baseTooltip({ trigger: 'item', formatter: (p) => `${p.name}<br/><b>${p.value.toLocaleString()}</b> calls (${fmt((p.value / total) * 100)}%)` }),
-    grid: baseGrid({ left: 8 }),
-    xAxis: { type: 'category', data: rows.map((r) => r.band), axisLabel: { ...AXIS_LABEL, interval: 0, rotate: 0 }, axisLine: { lineStyle: { color: C.line } }, axisTick: { show: false } },
+    grid: baseGrid({ left: 8, bottom: 34 }),
+    xAxis: {
+      type: 'category', data: ordered.map((r) => r.band),
+      axisLabel: { ...AXIS_LABEL, interval: 0, rotate: 22, hideOverlap: false },
+      axisLine: { lineStyle: { color: C.line } }, axisTick: { show: false },
+    },
     yAxis: valueAxis('calls'),
     series: [{
-      type: 'bar', data: rows.map((r) => ({ value: r.count, itemStyle: { color: severityColor(r.lower_seconds ?? 0) } })),
+      type: 'bar',
+      data: ordered.map((r) => ({ value: r.stops, itemStyle: { color: severityColor(r.lower) } })),
       barMaxWidth: 46,
-      // 4px rounded data-end, anchored to the baseline.
-      itemStyle: { borderRadius: [4, 4, 0, 0] },
+      itemStyle: { borderRadius: [4, 4, 0, 0] },   // 4px rounded data-end on the baseline
     }],
   });
 
-  const late = rows.filter((r) => (r.lower_seconds ?? 0) >= 360).reduce((s, r) => s + r.count, 0);
+  const late = ordered.filter((r) => r.lower >= 360).reduce((s, r) => s + r.stops, 0);
   const pct = (late / total) * 100;
+  const biggest = ordered.reduce((a, b) => (a.stops > b.stops ? a : b));
   setReading('read-distribution', pct > 20 ? 'bad' : pct > 10 ? 'warn' : 'good',
-    `${fmt(pct)}% of all observed calls are 6 minutes or worse (${late.toLocaleString()} of ${total.toLocaleString()}). ` +
-    `The bulk of the network sits in the ${rows.reduce((a, b) => (a.count > b.count ? a : b)).band} band.`);
+    `${fmt(pct)}% of observed calls are 6 minutes late or worse (${late.toLocaleString()} of ${total.toLocaleString()}). ` +
+    `Most of the network sits in the "${biggest.band}" band.`);
 }
 
 function renderStations(rows) {
@@ -486,6 +506,9 @@ const TrainMap = {
       center: [10.2, 51.1],
       zoom: 5.15,
       attributionControl: { compact: true },
+      // Without this the wheel zooms the map instead of scrolling the page, so
+      // the dashboard traps the reader the moment the cursor crosses the map.
+      cooperativeGestures: true,
       // Tiles are the one remote dependency; fail soft rather than throwing.
       transformRequest: (url) => ({ url }),
     });
