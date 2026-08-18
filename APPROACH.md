@@ -441,18 +441,23 @@ every five-second push.
 
 ## 8. What the live data actually showed
 
-From a single collection window (~34,000 stop-time observations, 144 distinct
-long-distance services):
+From a single ~40-minute collection window on a weekday morning: **60,504
+stop-time observations** across **152 distinct long-distance services**.
 
 | Measure | Value |
 |---|---|
-| Punctuality (<6 min) | **79.2 %** |
-| Mean delay | 5.2 min |
+| Punctuality (<6 min) | **77.0 %** |
+| Mean delay | 5.5 min |
 | Worst single delay | 91 min |
-| Skipped station calls | 1.84 % of calls, 10 services |
-| ICE punctuality | 80.2 % (mean 5.5 min) |
-| IC punctuality | 88.7 % (mean 1.6 min) |
-| EC / ECE | 100 % on this sample — EC ran *early* on average |
+| Skipped station calls | 1.82 % of calls, 11 services |
+| ICE | 75.7 % punctual, mean 6.0 min |
+| IC | 85.3 % punctual, mean 2.0 min |
+| ECE | 100 % punctual, mean 0.4 min |
+| EC | 100 % punctual, mean **−0.4 min** — running early |
+
+ICE, the flagship product, is the least punctual of the four. That is not a
+data error: ICE services run the longest routes with the most intermediate
+stops, so they have the most opportunity to accumulate delay.
 
 The propagation view caught a real failure: an ICE running on time through
 Hamburg and Lüneburg, then jumping to **+91 minutes at Uelzen** and holding that
@@ -482,8 +487,9 @@ that does less.
 - **Service alerts are not ingested.** The endpoint is configured and stop-level
   `SKIPPED` cancellations are captured, but the alerts stream itself is not yet
   decoded.
-- **Sample window is short.** The figures above are one morning, not a trend.
-  Punctuality varies enormously by hour, season and weather.
+- **Sample window is short.** The figures above are ~40 minutes of one weekday
+  morning, not a trend. Punctuality varies enormously by hour, season and
+  weather, and an early-morning window flatters the network.
 
 ### Next steps, in order of value
 
