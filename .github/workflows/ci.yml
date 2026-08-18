@@ -37,7 +37,10 @@ jobs:
           cache: pip
 
       - name: Install dependencies
-        run: pip install -r requirements.txt
+        run: pip install -r requirements.txt ruff
+
+      - name: Lint
+        run: ruff check .
 
       - name: Run tests
         # Network-marked tests are excluded: CI must not depend on a live
