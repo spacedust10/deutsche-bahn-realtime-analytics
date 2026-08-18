@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dbrt"
+version = "0.1.0"
+description = "Realtime GTFS-RT ingestion and delay analytics for DB Fernverkehr long-distance trains (ICE/IC/EC)"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+
+[tool.setuptools.packages.find]
+include = ["dbrt*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q --strict-markers"
+markers = [
+    "network: hits a live upstream feed (deselect with -m 'not network')",
+    "postgres: needs a reachable PostgreSQL instance (deselect with -m 'not postgres')",
+]
