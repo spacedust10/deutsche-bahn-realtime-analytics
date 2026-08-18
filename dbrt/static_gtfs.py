@@ -139,7 +139,7 @@ class StaticTimetable:
         """
         edges: dict[tuple[str, str], None] = {}
         for calls in self.stop_times.values():
-            for first, second in zip(calls, calls[1:]):
+            for first, second in zip(calls, calls[1:], strict=False):  # pairwise: last has no successor
                 if first.stop_id in self.stops and second.stop_id in self.stops:
                     edges.setdefault((first.stop_id, second.stop_id), None)
         return list(edges)

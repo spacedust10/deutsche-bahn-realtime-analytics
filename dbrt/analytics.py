@@ -431,7 +431,7 @@ def _place_train(trip_id: str, service_date: dt.date, calls: list[tuple], at: dt
                 "delay_seconds": last["delay"], "bearing": _bearing((prev["lat"], prev["lon"]), (last["lat"], last["lon"])),
                 "status": "arrived"}
 
-    for current, nxt in zip(timeline, timeline[1:]):
+    for current, nxt in zip(timeline, timeline[1:], strict=False):  # pairwise: last has no successor
         depart, arrive = current["depart"], nxt["arrive"]
         if not depart or not arrive or at < depart or at > arrive:
             continue

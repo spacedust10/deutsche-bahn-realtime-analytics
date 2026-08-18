@@ -2,6 +2,9 @@
 
 Usage:  python3 scripts/screenshot.py http://127.0.0.1:8000/ docs/dashboard.png
 
+Dev-only tool. Needs `websocket-client` and a local Chrome; deliberately not in
+requirements.txt, since nothing at runtime depends on it.
+
 Regenerates the image README embeds. Two things make this awkward enough to
 need a script rather than a one-liner:
 
@@ -9,8 +12,13 @@ Chrome's plain --screenshot fires before the dashboard's first fetch resolves,
 so it captures an empty shell; CDP lets us wait for real content. And MapLibre
 needs WebGL, which headless Chrome lacks unless SwiftShader is forced on.
 """
-import base64, json, subprocess, sys, time
+import base64
+import json
+import subprocess
+import sys
+import time
 import urllib.request
+
 import websocket
 
 CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"

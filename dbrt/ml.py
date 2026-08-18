@@ -23,7 +23,6 @@ itself has a standard deviation near 780s:
 from __future__ import annotations
 
 import datetime as dt
-
 from pathlib import Path
 
 import joblib
@@ -202,7 +201,7 @@ class DelayModel:
         total = float(drops.sum())
         rows = [
             {"feature": str(name), "importance": round(float(drop / total) if total else 0.0, 4)}
-            for name, drop in zip(X.columns, drops)
+            for name, drop in zip(X.columns, drops, strict=True)  # one drop per column, always
         ]
         return sorted(rows, key=lambda r: r["importance"], reverse=True)
 

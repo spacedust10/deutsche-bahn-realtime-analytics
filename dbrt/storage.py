@@ -49,10 +49,14 @@ class Warehouse:
         self._local = threading.local()
         self._connections: list = []
         self._lock = threading.Lock()
-        self.conn  # Connect eagerly so an unreachable database fails here.
+        # Connect eagerly so an unreachable database fails here, not on first query.
+        self._connect()
 
     @property
     def conn(self):
+        return self._connect()
+
+    def _connect(self):
         existing = getattr(self._local, "conn", None)
         if existing is not None and not existing.closed:
             return existing
