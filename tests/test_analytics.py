@@ -74,14 +74,18 @@ def test_punctuality_on_empty_history_returns_zeroes_not_a_crash(warehouse):
 
 def test_station_delays_rank_worst_first_and_resolve_names(seeded):
     rows = analytics.station_delays(seeded, limit=10, min_observations=1)
-    assert rows[0]["stop_name"] in {"Berlin Hbf", "Hannover Hbf"}
+    # Means: Köln 600 (1 obs), Hannover 460 (3 obs), Berlin 300 (3 obs).
+    assert [r["stop_name"] for r in rows] == ["Köln Hbf", "Hannover Hbf", "Berlin Hbf"]
     assert rows[0]["mean_delay_seconds"] >= rows[-1]["mean_delay_seconds"]
-    assert all("stop_name" in r for r in rows)
 
 
 def test_station_delays_respect_the_minimum_observation_filter(seeded):
-    """Ranking stations on a single observation produces noise, not insight."""
-    assert analytics.station_delays(seeded, min_observations=3) == []
+    """Ranking stations on a single observation produces noise, not insight:
+    Köln has the worst mean delay but only one observation behind it."""
+    names = [r["stop_name"] for r in analytics.station_delays(seeded, min_observations=3)]
+    assert names == ["Hannover Hbf", "Berlin Hbf"]
+    assert "Köln Hbf" not in names
+    assert analytics.station_delays(seeded, min_observations=4) == []
 
 
 def test_station_delays_include_coordinates_for_mapping(seeded):
