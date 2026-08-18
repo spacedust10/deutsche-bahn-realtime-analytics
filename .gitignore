@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Secrets & local config
+.env
+
+# Data artifacts (regenerated from upstream feeds)
+data/
+*.zip
+*.pb
+*.proto.bin
+models/*.joblib
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+
+# AI tooling scratch
+.serena/
+.gstack/
+.claude/
+.qodo/
