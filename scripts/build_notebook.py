@@ -10,8 +10,12 @@ import nbformat as nbf
 
 OUT = Path(__file__).resolve().parent.parent / "notebooks" / "historical_analysis.ipynb"
 
-MD = lambda text: nbf.v4.new_markdown_cell(text.strip())
-CODE = lambda src: nbf.v4.new_code_cell(src.strip())
+def MD(text):
+    return nbf.v4.new_markdown_cell(text.strip())
+
+
+def CODE(src):
+    return nbf.v4.new_code_cell(src.strip())
 
 CELLS = [
     MD("""

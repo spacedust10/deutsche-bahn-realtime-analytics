@@ -11,7 +11,7 @@ question is about how delays evolved.
 from __future__ import annotations
 
 import datetime as dt
-from typing import Any, Optional
+from typing import Any
 
 PUNCTUALITY_THRESHOLD_SECONDS = 360  # DB: "pünktlich" = under 6 minutes late.
 
@@ -110,10 +110,10 @@ def category_breakdown(warehouse, hours: int = 24) -> list[dict]:
     ]
 
 
-def delay_propagation(warehouse, trip_id: str, service_date: Optional[dt.date] = None) -> list[dict]:
+def delay_propagation(warehouse, trip_id: str, service_date: dt.date | None = None) -> list[dict]:
     """How one train's delay evolves stop by stop along its route."""
     rows = warehouse.fetchall(
-        f"""
+        """
         SELECT d.stop_sequence, d.stop_id, COALESCE(s.stop_name, d.stop_id),
                d.arrival_delay, d.departure_delay, s.stop_lat, s.stop_lon, d.route_category
         FROM   current_stop_delays d

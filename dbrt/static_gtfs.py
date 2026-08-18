@@ -12,9 +12,9 @@ import csv
 import io
 import time
 import zipfile
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, Optional
 
 import requests
 
@@ -30,16 +30,16 @@ class Route:
     route_long_name: str
     category: str
     agency_id: str
-    route_type: Optional[int]
+    route_type: int | None
 
 
 @dataclass(frozen=True)
 class Stop:
     stop_id: str
     stop_name: str
-    stop_lat: Optional[float]
-    stop_lon: Optional[float]
-    parent_station: Optional[str]
+    stop_lat: float | None
+    stop_lon: float | None
+    parent_station: str | None
 
 
 @dataclass(frozen=True)
@@ -49,7 +49,7 @@ class Trip:
     service_id: str
 
 
-def category_from_short_name(short_name: Optional[str]) -> str:
+def category_from_short_name(short_name: str | None) -> str:
     """"ICE 41" -> "ICE". The feed puts the line number in route_short_name."""
     if not short_name:
         return ""
@@ -71,7 +71,7 @@ class StaticTimetable:
     # --- construction ------------------------------------------------------
 
     @classmethod
-    def from_zip(cls, path: Path | str) -> "StaticTimetable":
+    def from_zip(cls, path: Path | str) -> StaticTimetable:
         with zipfile.ZipFile(path) as archive:
             routes = {r.route_id: r for r in _routes(_rows(archive, "routes.txt"))}
             trips = {t.trip_id: t for t in _trips(_rows(archive, "trips.txt"))}
@@ -80,15 +80,15 @@ class StaticTimetable:
 
     # --- lookups -----------------------------------------------------------
 
-    def route_for_trip(self, trip_id: str) -> Optional[Route]:
+    def route_for_trip(self, trip_id: str) -> Route | None:
         trip = self.trips.get(trip_id)
         return self.routes.get(trip.route_id) if trip else None
 
-    def category_for_trip(self, trip_id: str) -> Optional[str]:
+    def category_for_trip(self, trip_id: str) -> str | None:
         route = self.route_for_trip(trip_id)
         return route.category if route else None
 
-    def stop_name(self, stop_id: Optional[str]) -> str:
+    def stop_name(self, stop_id: str | None) -> str:
         """Never lose the identifier when reference data lags the feed."""
         if not stop_id:
             return ""
@@ -170,14 +170,14 @@ def _stops(rows: Iterable[dict]) -> Iterable[Stop]:
         )
 
 
-def _int(raw) -> Optional[int]:
+def _int(raw) -> int | None:
     try:
         return int(raw)
     except (TypeError, ValueError):
         return None
 
 
-def _float(raw) -> Optional[float]:
+def _float(raw) -> float | None:
     try:
         return float(raw)
     except (TypeError, ValueError):

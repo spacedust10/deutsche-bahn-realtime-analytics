@@ -154,8 +154,10 @@ def test_a_later_train_is_predicted_later_than_a_punctual_one(observations):
     model = DelayModel()
     model.train(observations)
     pairs = next_stop_pairs(observations)
-    punctual = pairs.head(1).copy(); punctual["delay"] = 0
-    very_late = pairs.head(1).copy(); very_late["delay"] = 1800
+    punctual = pairs.head(1).copy()
+    punctual["delay"] = 0
+    very_late = pairs.head(1).copy()
+    very_late["delay"] = 1800
     assert model.predict(very_late)[0] > model.predict(punctual)[0]
 
 

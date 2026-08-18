@@ -10,7 +10,6 @@ import datetime as dt
 import logging
 import time
 from dataclasses import dataclass
-from typing import Optional
 
 from .gtfs_rt import decode_feed, feed_timestamp, iter_stop_time_updates
 
@@ -19,16 +18,16 @@ log = logging.getLogger(__name__)
 
 @dataclass
 class PollSummary:
-    feed_timestamp: Optional[dt.datetime] = None
+    feed_timestamp: dt.datetime | None = None
     entity_count: int = 0
     long_distance_trips: int = 0
     rows_written: int = 0
     payload_bytes: int = 0
-    http_status: Optional[int] = None
+    http_status: int | None = None
     not_modified: bool = False
     duration_ms: int = 0
     source_label: str = ""
-    error: Optional[str] = None
+    error: str | None = None
 
 
 def collect_once(client, timetable, warehouse) -> PollSummary:
@@ -84,7 +83,7 @@ def collect_once(client, timetable, warehouse) -> PollSummary:
     return summary
 
 
-def run_forever(settings, timetable, warehouse, client=None, iterations: Optional[int] = None) -> None:
+def run_forever(settings, timetable, warehouse, client=None, iterations: int | None = None) -> None:
     """Poll on a fixed interval until interrupted (or `iterations` polls elapse).
 
     Sleeps for the remainder of the interval rather than a flat interval, so a

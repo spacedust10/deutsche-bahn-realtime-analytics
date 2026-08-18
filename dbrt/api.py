@@ -11,7 +11,7 @@ import datetime as dt
 import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
@@ -30,7 +30,7 @@ MODEL_PATH = Path(__file__).resolve().parent.parent / "models" / "delay_model.jo
 PUSH_INTERVAL_SECONDS = 5
 
 
-def create_app(settings: Optional[Settings] = None) -> FastAPI:
+def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or Settings.from_env()
 
     # ponytail: one shared autocommit connection. Fine for a single-process

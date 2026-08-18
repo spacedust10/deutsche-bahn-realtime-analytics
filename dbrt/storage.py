@@ -12,8 +12,8 @@ restart without corrupting history.
 from __future__ import annotations
 
 import datetime as dt
+from collections.abc import Iterable, Sequence
 from pathlib import Path
-from typing import Iterable, Optional, Sequence
 
 import psycopg2
 from psycopg2.extras import execute_values
@@ -118,15 +118,15 @@ class Warehouse:
 
     def record_poll(
         self,
-        feed_timestamp: Optional[dt.datetime] = None,
+        feed_timestamp: dt.datetime | None = None,
         source_url: str = "",
-        http_status: Optional[int] = None,
+        http_status: int | None = None,
         payload_bytes: int = 0,
         entity_count: int = 0,
         long_distance_trips: int = 0,
         rows_written: int = 0,
         duration_ms: int = 0,
-        error: Optional[str] = None,
+        error: str | None = None,
     ) -> None:
         with self.conn.cursor() as cur:
             cur.execute(
@@ -144,7 +144,7 @@ class Warehouse:
             cur.execute(sql, tuple(params))
             return cur.fetchall()
 
-    def fetchone(self, sql: str, params: Iterable = ()) -> Optional[tuple]:
+    def fetchone(self, sql: str, params: Iterable = ()) -> tuple | None:
         with self.conn.cursor() as cur:
             cur.execute(sql, tuple(params))
             return cur.fetchone()
@@ -154,6 +154,6 @@ class Warehouse:
             raise ValueError(f"unknown table: {table}")  # Never interpolate caller input.
         return self.fetchone(f"SELECT count(*) FROM {table}")[0]
 
-    def latest_feed_timestamp(self) -> Optional[dt.datetime]:
+    def latest_feed_timestamp(self) -> dt.datetime | None:
         row = self.fetchone("SELECT max(feed_timestamp) FROM stop_time_updates")
         return row[0] if row else None

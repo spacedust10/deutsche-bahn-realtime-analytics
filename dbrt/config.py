@@ -8,9 +8,9 @@ every downstream consumer (and the dashboard) can report data lineage honestly.
 from __future__ import annotations
 
 import os
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Mapping, Optional
 
 OFFICIAL_RT_URL = "https://gtfs-datenstroeme.tech.deutschebahn.com/db-fernverkehr/gtfsrt_trip_updates.proto"
 OFFICIAL_ALERTS_URL = "https://gtfs-datenstroeme.tech.deutschebahn.com/db-fernverkehr/gtfsrt_service_alerts.proto"
@@ -57,8 +57,8 @@ class Settings:
     def from_env(
         cls,
         env: Mapping[str, str] | None = None,
-        dotenv_path: Optional[Path] = None,
-    ) -> "Settings":
+        dotenv_path: Path | None = None,
+    ) -> Settings:
         if env is None:
             # Real environment wins: an explicit export must not be overridden
             # by a stale .env someone forgot about.

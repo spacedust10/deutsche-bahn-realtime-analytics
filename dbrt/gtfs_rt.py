@@ -10,8 +10,8 @@ The decoder deliberately distinguishes "no prediction" (None) from "on time"
 from __future__ import annotations
 
 import datetime as dt
+from collections.abc import Iterator
 from dataclasses import dataclass
-from typing import Iterator, Optional
 
 from google.protobuf.message import DecodeError
 from google.transit import gtfs_realtime_pb2 as gtfs_rt
@@ -28,14 +28,14 @@ class StopTimeUpdateRecord:
     trip_id: str
     service_date: dt.date
     stop_sequence: int
-    stop_id: Optional[str]
-    arrival_delay: Optional[int]
-    departure_delay: Optional[int]
-    arrival_time: Optional[dt.datetime]
-    departure_time: Optional[dt.datetime]
+    stop_id: str | None
+    arrival_delay: int | None
+    departure_delay: int | None
+    arrival_time: dt.datetime | None
+    departure_time: dt.datetime | None
     schedule_relationship: str
     trip_schedule_relationship: str
-    route_id: Optional[str]
+    route_id: str | None
 
 
 def decode_feed(payload: bytes) -> gtfs_rt.FeedMessage:
@@ -92,7 +92,7 @@ def iter_stop_time_updates(feed: gtfs_rt.FeedMessage) -> Iterator[StopTimeUpdate
             )
 
 
-def _delay(stu, field: str) -> Optional[int]:
+def _delay(stu, field: str) -> int | None:
     """Delay in seconds, or None when the feed makes no prediction for this event."""
     if not stu.HasField(field):
         return None
@@ -100,7 +100,7 @@ def _delay(stu, field: str) -> Optional[int]:
     return event.delay if event.HasField("delay") else None
 
 
-def _event_time(stu, field: str) -> Optional[dt.datetime]:
+def _event_time(stu, field: str) -> dt.datetime | None:
     if not stu.HasField(field):
         return None
     event = getattr(stu, field)

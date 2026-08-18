@@ -23,7 +23,6 @@ itself has a standard deviation near 780s:
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Optional
 
 import joblib
 import numpy as np
@@ -69,7 +68,7 @@ def next_stop_pairs(observations: pd.DataFrame) -> pd.DataFrame:
     return df.dropna(subset=["next_delay"]).reset_index(drop=True)
 
 
-def build_features(pairs: pd.DataFrame, columns: Optional[pd.Index] = None) -> tuple[pd.DataFrame, pd.Series]:
+def build_features(pairs: pd.DataFrame, columns: pd.Index | None = None) -> tuple[pd.DataFrame, pd.Series]:
     """Feature matrix and target.
 
     `columns` reindexes to a previously fitted layout so a category that never
@@ -102,8 +101,8 @@ def baseline_mae(pairs: pd.DataFrame) -> float:
 
 class DelayModel:
     def __init__(self):
-        self.model: Optional[HistGradientBoostingRegressor] = None
-        self.columns: Optional[pd.Index] = None
+        self.model: HistGradientBoostingRegressor | None = None
+        self.columns: pd.Index | None = None
         self.metrics: dict = {}
 
     def train(self, observations: pd.DataFrame, test_size: float = 0.25, random_state: int = 42) -> dict:
@@ -159,7 +158,7 @@ class DelayModel:
         return path
 
     @classmethod
-    def load(cls, path: Path | str) -> "DelayModel":
+    def load(cls, path: Path | str) -> DelayModel:
         payload = joblib.load(Path(path))
         instance = cls()
         instance.model = payload["model"]

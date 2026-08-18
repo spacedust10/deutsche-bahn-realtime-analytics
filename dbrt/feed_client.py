@@ -7,7 +7,6 @@ requests matter more than usual here: the open fallback feed is ~45 MB, so a
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional
 
 import requests
 
@@ -19,7 +18,7 @@ USER_AGENT = "dbrt/0.1 (+https://github.com/spacedust10/deutsche-bahn-realtime-a
 
 @dataclass(frozen=True)
 class FeedResult:
-    payload: Optional[bytes]
+    payload: bytes | None
     status: int
     not_modified: bool
     source_label: str
@@ -33,7 +32,7 @@ class FeedClient:
     def __init__(self, settings: Settings, session=None):
         self.settings = settings
         self.session = session or requests.Session()
-        self.etag: Optional[str] = None
+        self.etag: str | None = None
 
     def fetch(self) -> FeedResult:
         source = self.settings.realtime_source()
