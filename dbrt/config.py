@@ -9,7 +9,8 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
-from typing import Mapping
+from pathlib import Path
+from typing import Mapping, Optional
 
 OFFICIAL_RT_URL = "https://gtfs-datenstroeme.tech.deutschebahn.com/db-fernverkehr/gtfsrt_trip_updates.proto"
 OFFICIAL_ALERTS_URL = "https://gtfs-datenstroeme.tech.deutschebahn.com/db-fernverkehr/gtfsrt_service_alerts.proto"
@@ -17,6 +18,7 @@ OFFICIAL_STATIC_URL = "https://gtfs-datenstroeme.tech.deutschebahn.com/db-fernve
 FALLBACK_RT_URL = "https://realtime.gtfs.de/realtime-free.pb"
 FALLBACK_STATIC_URL = "https://download.gtfs.de/germany/fv_free/latest.zip"
 
+DEFAULT_ENV_FILE = Path(__file__).resolve().parent.parent / ".env"
 DEFAULT_POLL_SECONDS = 60
 MIN_POLL_SECONDS = 10  # Politeness floor; DB documents 20s for the official feed.
 
@@ -52,8 +54,15 @@ class Settings:
     api_port: int = 8000
 
     @classmethod
-    def from_env(cls, env: Mapping[str, str] | None = None) -> "Settings":
-        env = os.environ if env is None else env
+    def from_env(
+        cls,
+        env: Mapping[str, str] | None = None,
+        dotenv_path: Optional[Path] = None,
+    ) -> "Settings":
+        if env is None:
+            # Real environment wins: an explicit export must not be overridden
+            # by a stale .env someone forgot about.
+            env = {**load_dotenv(dotenv_path or DEFAULT_ENV_FILE), **os.environ}
 
         def get(key: str, default: str) -> str:
             value = env.get(key)
@@ -101,3 +110,23 @@ def _positive_int(raw: str | None, default: int, minimum: int) -> int:
         return max(int(str(raw).strip()), minimum)
     except (TypeError, ValueError):
         return default
+
+
+def load_dotenv(path: Path | str) -> dict[str, str]:
+    """Minimal KEY=VALUE reader.
+
+    Deliberately not python-dotenv: this is eight lines of parsing against a
+    file format we also author, and one fewer dependency in the deployment.
+    """
+    path = Path(path)
+    if not path.exists():
+        return {}
+
+    values: dict[str, str] = {}
+    for line in path.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")  # partition keeps '=' inside values
+        values[key.strip()] = value.strip().strip("\"'")
+    return values
