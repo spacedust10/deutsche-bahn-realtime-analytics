@@ -19,8 +19,12 @@ FALLBACK_RT_URL = "https://realtime.gtfs.de/realtime-free.pb"
 FALLBACK_STATIC_URL = "https://download.gtfs.de/germany/fv_free/latest.zip"
 
 DEFAULT_ENV_FILE = Path(__file__).resolve().parent.parent / ".env"
-DEFAULT_POLL_SECONDS = 60
+DEFAULT_POLL_SECONDS = 30
 MIN_POLL_SECONDS = 10  # Politeness floor; DB documents 20s for the official feed.
+# The open fallback ships all of Germany uncompressed (~44 MB, ~9s to pull), so a
+# true 10s upstream poll would saturate the link continuously against a
+# donation-funded server. The dashboard refreshes at 10s regardless; only the
+# fetch is slower, and the UI reports how old the data actually is.
 
 
 @dataclass(frozen=True)

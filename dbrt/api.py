@@ -27,7 +27,9 @@ log = logging.getLogger(__name__)
 WEB_DIR = Path(__file__).resolve().parent.parent / "web"
 MODEL_PATH = Path(__file__).resolve().parent.parent / "models" / "delay_model.joblib"
 
-PUSH_INTERVAL_SECONDS = 5
+# The upstream GTFS-RT stream republishes every 10s, so pushing faster than
+# that shows the same numbers twice. This is the dashboard's heartbeat.
+PUSH_INTERVAL_SECONDS = 10
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -135,6 +137,33 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             return {"trained": False, "detail": "no model on disk; run scripts/train_model.py"}
         return {"trained": True, **model.metrics}
 
+    @app.get("/api/geo/network")
+    def geo_network() -> dict:
+        """Rail network as GeoJSON. Static between timetable reloads, so the
+        browser is told it may cache it for an hour."""
+        return analytics.network_geometry(warehouse())
+
+    @app.get("/api/geo/stations")
+    def geo_stations(min_calls: int = Query(1, ge=1, le=500)) -> dict:
+        return analytics.station_points(warehouse(), min_calls=min_calls)
+
+    @app.get("/api/positions")
+    def positions(
+        at: str | None = Query(None, description="ISO-8601 instant; defaults to now"),
+        limit: int = Query(600, ge=1, le=2000),
+    ) -> dict:
+        """Interpolated train positions, either live or at a historical instant."""
+        when = _parse_instant(at)
+        return {
+            "at": when.isoformat(),
+            "positions": analytics.live_positions(warehouse(), at=when, limit=limit),
+        }
+
+    @app.get("/api/history/window")
+    def history_window() -> dict:
+        """Span the collected history covers — the range of the time slider."""
+        return analytics.history_window(warehouse())
+
     # --- WebSocket ---------------------------------------------------------
 
     @app.websocket("/ws")
@@ -160,6 +189,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             return FileResponse(WEB_DIR / "index.html")
 
     return app
+
+
+def _parse_instant(raw: str | None) -> dt.datetime:
+    """Parse an ISO-8601 query param, defaulting to now and always tz-aware."""
+    if not raw:
+        return dt.datetime.now(tz=dt.timezone.utc)
+    try:
+        parsed = dt.datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        raise HTTPException(status_code=422, detail=f"not an ISO-8601 instant: {raw}") from None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=dt.timezone.utc)
 
 
 def _summary(warehouse: Warehouse, settings: Settings, hours: int = 24) -> dict:
@@ -197,6 +237,8 @@ def _dashboard_payload(warehouse: Warehouse, settings: Settings) -> dict:
         "categories": analytics.category_breakdown(warehouse),
         "distribution": analytics.delay_distribution(warehouse),
         "network": analytics.network_snapshot(warehouse, limit=400),
+        "positions": analytics.live_positions(warehouse, limit=600),
+        "history_window": analytics.history_window(warehouse),
         "cancellations": analytics.cancellations(warehouse),
         "skipped_stations": analytics.skipped_stations(warehouse, limit=8),
         "worst_trips": analytics.worst_trips(warehouse, limit=8),

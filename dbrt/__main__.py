@@ -32,11 +32,13 @@ def main() -> None:
     log.info("realtime source: %s", source.label)
 
     zip_path = download_static(settings, DATA_DIR / "gtfs_static.zip")
-    timetable = StaticTimetable.from_zip(zip_path)
+    # stop_times is loaded so the dashboard map can interpolate train positions.
+    timetable = StaticTimetable.from_zip(zip_path, load_stop_times=True)
     log.info(
-        "timetable: %d routes, %d trips (%d long-distance), %d stops",
+        "timetable: %d routes, %d trips (%d long-distance), %d stops, %d scheduled calls",
         len(timetable.routes), len(timetable.trips),
         len(timetable.long_distance_trip_ids()), len(timetable.stops),
+        sum(len(c) for c in timetable.stop_times.values()),
     )
 
     warehouse = Warehouse(settings.dsn())

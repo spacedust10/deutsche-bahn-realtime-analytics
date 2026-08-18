@@ -179,3 +179,39 @@ def test_dashboard_endpoint_is_populated_not_empty(client):
     assert body["network"]
     assert body["distribution"]
     assert body["summary"]["observations_stored"] == 5
+
+
+# --- map endpoints ---------------------------------------------------------
+
+def test_geo_network_endpoint_returns_a_feature_collection(client):
+    body = client.get("/api/geo/network").json()
+    assert body["type"] == "FeatureCollection"
+
+
+def test_geo_stations_endpoint_returns_a_feature_collection(client):
+    body = client.get("/api/geo/stations").json()
+    assert body["type"] == "FeatureCollection"
+
+
+def test_positions_endpoint_defaults_to_now(client):
+    body = client.get("/api/positions").json()
+    assert "at" in body and isinstance(body["positions"], list)
+
+
+def test_positions_endpoint_accepts_a_historical_instant(client):
+    body = client.get("/api/positions", params={"at": "2026-08-18T08:30:00Z"}).json()
+    assert body["at"].startswith("2026-08-18T08:30:00")
+
+
+def test_positions_endpoint_rejects_a_malformed_instant(client):
+    assert client.get("/api/positions", params={"at": "yesterday"}).status_code == 422
+
+
+def test_history_window_endpoint_exposes_the_slider_range(client):
+    body = client.get("/api/history/window").json()
+    assert set(body) == {"start", "end"}
+
+
+def test_dashboard_payload_carries_positions_for_the_map(client):
+    body = client.get("/api/dashboard").json()
+    assert "positions" in body and "history_window" in body
