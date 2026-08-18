@@ -114,3 +114,70 @@ def test_a_corrupt_payload_is_reported_rather_than_crashing_the_loop(timetable):
 def test_duration_is_measured_for_every_poll(rt_bytes, timetable):
     summary = collect_once(FakeClient(ok_result(rt_bytes)), timetable, FakeWarehouse())
     assert summary.duration_ms >= 0
+
+
+# --- the loop --------------------------------------------------------------
+
+def test_run_forever_stops_after_the_requested_iterations(rt_bytes, timetable, monkeypatch):
+    import dbrt.collector as collector_module
+    from dbrt.collector import run_forever
+    from dbrt.config import Settings
+
+    slept = []
+    monkeypatch.setattr(collector_module.time, "sleep", slept.append)
+
+    warehouse = FakeWarehouse()
+    client = FakeClient(*[ok_result(rt_bytes) for _ in range(3)])
+    run_forever(Settings.from_env({}), timetable, warehouse, client=client, iterations=3)
+
+    assert len(warehouse.polls) == 3
+
+
+def test_run_forever_does_not_sleep_after_the_final_iteration(rt_bytes, timetable, monkeypatch):
+    import dbrt.collector as collector_module
+    from dbrt.collector import run_forever
+    from dbrt.config import Settings
+
+    slept = []
+    monkeypatch.setattr(collector_module.time, "sleep", slept.append)
+
+    run_forever(Settings.from_env({}), timetable, FakeWarehouse(),
+                client=FakeClient(ok_result(rt_bytes)), iterations=1)
+
+    assert slept == [], "a bounded run must not idle after its last poll"
+
+
+def test_run_forever_subtracts_poll_duration_from_the_sleep(timetable, monkeypatch):
+    """Sleeping a flat interval would let a slow poll accumulate drift."""
+    import dbrt.collector as collector_module
+    from dbrt.collector import run_forever
+    from dbrt.config import Settings
+
+    slept = []
+    monkeypatch.setattr(collector_module.time, "sleep", slept.append)
+    unchanged = FeedResult(None, 304, True, "open", False, 0)
+
+    settings = Settings.from_env({"POLL_INTERVAL_SECONDS": "30"})
+    run_forever(settings, timetable, FakeWarehouse(),
+                client=FakeClient(unchanged, unchanged), iterations=2)
+
+    assert len(slept) == 1
+    assert 0 <= slept[0] <= 30
+
+
+def test_run_forever_keeps_polling_after_a_failed_cycle(rt_bytes, timetable, monkeypatch):
+    """One upstream error must not end the collection run."""
+    import dbrt.collector as collector_module
+    from dbrt.collector import run_forever
+    from dbrt.config import Settings
+
+    monkeypatch.setattr(collector_module.time, "sleep", lambda _: None)
+
+    warehouse = FakeWarehouse()
+    client = FakeClient(RuntimeError("HTTP 503"), ok_result(rt_bytes))
+    run_forever(Settings.from_env({}), timetable, warehouse, client=client, iterations=2)
+
+    assert len(warehouse.polls) == 2
+    assert warehouse.polls[0]["error"] == "HTTP 503"
+    assert warehouse.polls[1]["error"] is None
+    assert warehouse.batches, "the cycle after the failure still wrote data"
