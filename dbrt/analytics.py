@@ -237,6 +237,57 @@ def delay_distribution(warehouse, hours: int = 24) -> list[dict]:
     return [{"band": r[0].split(":", 1)[1], "stops": r[1]} for r in rows]
 
 
+def cancellations(warehouse, hours: int = 24) -> dict[str, Any]:
+    """Skipped stops and cancelled trips.
+
+    GTFS-RT expresses a dropped station as schedule_relationship=SKIPPED on the
+    stop, and a cancelled service as CANCELED on the trip. They are different
+    events for a passenger, so they are counted separately.
+    """
+    row = warehouse.fetchone(
+        """
+        SELECT count(*) AS total,
+               count(*) FILTER (WHERE c.schedule_relationship = 'SKIPPED') AS skipped,
+               count(DISTINCT c.trip_id) FILTER (WHERE c.schedule_relationship = 'SKIPPED') AS affected,
+               count(DISTINCT c.trip_id) FILTER (WHERE u.trip_schedule_relationship = 'CANCELED') AS cancelled
+        FROM   current_stop_delays c
+        -- The latest-state view carries the stop relationship but not the trip
+        -- one, so the fact table is joined back for trip-level cancellation.
+        JOIN   stop_time_updates u
+          ON   u.trip_id = c.trip_id AND u.service_date = c.service_date
+         AND   u.stop_sequence = c.stop_sequence AND u.feed_timestamp = c.feed_timestamp
+        WHERE  c.feed_timestamp > now() - make_interval(hours => %s)
+        """,
+        (hours,),
+    )
+    total, skipped, affected, cancelled = row or (0, 0, 0, 0)
+    return {
+        "skipped_stops": skipped or 0,
+        "affected_trips": affected or 0,
+        "cancelled_trips": cancelled or 0,
+        "total_stops": total or 0,
+        "skipped_pct": round(100 * skipped / total, 2) if total else 0.0,
+    }
+
+
+def skipped_stations(warehouse, limit: int = 10, hours: int = 24) -> list[dict]:
+    """Stations most often dropped from a route."""
+    rows = warehouse.fetchall(
+        """
+        SELECT COALESCE(s.stop_name, u.stop_id) AS stop_name, u.stop_id, count(*) AS skipped
+        FROM   stop_time_updates u
+        LEFT   JOIN stops s ON s.stop_id = u.stop_id
+        WHERE  u.schedule_relationship = 'SKIPPED'
+          AND  u.feed_timestamp > now() - make_interval(hours => %s)
+        GROUP  BY 1, 2
+        ORDER  BY skipped DESC, stop_name
+        LIMIT  %s
+        """,
+        (hours, limit),
+    )
+    return [{"stop_name": r[0], "stop_id": r[1], "skipped": r[2]} for r in rows]
+
+
 def station_geometry(warehouse) -> list[dict]:
     """Every located station, for the map backdrop.
 
