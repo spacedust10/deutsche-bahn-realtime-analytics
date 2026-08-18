@@ -161,7 +161,7 @@ def test_a_later_train_is_predicted_later_than_a_punctual_one(observations):
     assert model.predict(very_late)[0] > model.predict(punctual)[0]
 
 
-@pytest.fixture()
+@pytest.fixture(scope="module")
 def persistent_observations():
     """Realistic railway behaviour: delay mostly carries over, drifting slightly.
 
@@ -193,7 +193,14 @@ def persistent_observations():
     return frame(rows)
 
 
-def test_model_beats_persistence_on_realistically_persistent_delays(persistent_observations):
+@pytest.fixture(scope="module")
+def persistent_metrics(persistent_observations):
+    """Trained once. Deterministic given the seed, and several tests below only
+    inspect different properties of the same result."""
+    return DelayModel().train(persistent_observations)
+
+
+def test_model_beats_persistence_on_realistically_persistent_delays(persistent_metrics):
     """RMSE is the assertion, not MAE, and the reason is structural.
 
     When half of all deltas are exactly zero the median delta is zero, which
@@ -201,18 +208,17 @@ def test_model_beats_persistence_on_realistically_persistent_delays(persistent_o
     that metric by construction, not by being good. RMSE rewards getting the
     magnitude right, so it is where learned structure actually shows.
     """
-    metrics = DelayModel().train(persistent_observations)
+    metrics = persistent_metrics
     assert metrics["rmse_seconds"] < metrics["baseline_rmse_seconds"], (
         f"model RMSE {metrics['rmse_seconds']}s must beat persistence "
         f"{metrics['baseline_rmse_seconds']}s"
     )
 
 
-def test_mae_tracks_persistence_closely_when_half_the_deltas_are_zero(persistent_observations):
+def test_mae_tracks_persistence_closely_when_half_the_deltas_are_zero(persistent_metrics):
     """Documents the ceiling: with a zero median delta, MAE cannot separate the
     model from persistence by much in either direction."""
-    metrics = DelayModel().train(persistent_observations)
-    assert abs(metrics["improvement_pct"]) < 10
+    assert abs(persistent_metrics["improvement_pct"]) < 10
 
 
 def test_model_predicts_a_correction_to_the_current_delay(persistent_observations):
@@ -229,17 +235,17 @@ def test_model_predicts_a_correction_to_the_current_delay(persistent_observation
 
 # --- stability of the reported metric --------------------------------------
 
-def test_metrics_report_both_mae_and_rmse(persistent_observations):
+def test_metrics_report_both_mae_and_rmse(persistent_metrics):
     """MAE and RMSE reward different predictions; reporting one hides which."""
-    metrics = DelayModel().train(persistent_observations)
+    metrics = persistent_metrics
     assert metrics["rmse_seconds"] > 0
     assert metrics["baseline_rmse_seconds"] > 0
 
 
-def test_metrics_are_cross_validated_not_a_single_split(persistent_observations):
+def test_metrics_are_cross_validated_not_a_single_split(persistent_metrics):
     """A single random split on ~1.4k pairs swings the reported improvement by
     several points run to run. Averaging folds gives a number worth quoting."""
-    metrics = DelayModel().train(persistent_observations)
+    metrics = persistent_metrics
     assert metrics["cv_folds"] >= 3
     assert "mae_std_seconds" in metrics
     assert metrics["mae_std_seconds"] >= 0
@@ -252,10 +258,10 @@ def test_cross_validated_metrics_are_reproducible(persistent_observations):
     assert first["improvement_pct"] == second["improvement_pct"]
 
 
-def test_baseline_is_scored_on_the_same_folds_as_the_model(persistent_observations):
+def test_baseline_is_scored_on_the_same_folds_as_the_model(persistent_metrics):
     """Comparing against a baseline measured elsewhere would flatter whichever
     split happened to be easier."""
-    metrics = DelayModel().train(persistent_observations)
+    metrics = persistent_metrics
     assert metrics["baseline_mae_seconds"] > 0
     expected = 100 * (metrics["baseline_mae_seconds"] - metrics["mae_seconds"]) / metrics["baseline_mae_seconds"]
     # Reported metrics are rounded for display, so recomputing drifts slightly.
