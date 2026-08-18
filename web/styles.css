@@ -33,12 +33,15 @@
   --d2: #ff7406;   /* 6-15 min          L .715 */
   --d3: #ff9c9c;   /* 15 min +          L .794 */
 
-  /* Categorical — train products. Validated as a 4-slot adjacent set on this
-     surface: worst CVD dE 8.4, worst normal-vision dE 19.8, all >= 3:1. */
+  /* Categorical — train products. EC deliberately does NOT use the green that
+     --ok uses: a series sharing a hex with a status colour makes "EC" read as
+     "good". Validated as an adjacent set on this surface: worst CVD dE 26.0,
+     worst normal-vision dE 27.0, all >= 3:1. */
   --c-ice: #3987e5;
   --c-ic:  #d95926;
-  --c-ec:  #199e70;
-  --c-oth: #c98500;
+  --c-ec:  #9085e9;
+  --c-ece: #c98500;
+  --c-oth: #8195ad;
 
   /* Status — reserved meanings, always paired with an icon or label. */
   --ok:   #199e70;
@@ -183,6 +186,12 @@ main { padding: 18px 24px 28px; display: flex; flex-direction: column; gap: 18px
   grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
 }
 .row.thirds { grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); }
+
+/* Three panels in a two-column row strand the third. Let it take the full
+   width instead of sitting beside dead space. */
+@media (max-width: 1180px) {
+  .row.thirds > :last-child:nth-child(odd) { grid-column: 1 / -1; }
+}
 
 .panel {
   background: var(--panel);

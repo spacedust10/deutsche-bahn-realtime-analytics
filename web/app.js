@@ -21,7 +21,7 @@ const C = {
   ink: '#eef2f8', ink2: '#a8b6ca', muted: '#8195ad',
   panel: '#131a24', raise: '#1a2331', line: '#243041',
   d0: '#007a2a', d1: '#a28500', d2: '#ff7406', d3: '#ff9c9c',
-  ice: '#3987e5', ic: '#d95926', ec: '#199e70', oth: '#c98500',
+  ice: '#3987e5', ic: '#d95926', ec: '#9085e9', ece: '#c98500', oth: '#8195ad',
   ok: '#199e70', warn: '#c98500', bad: '#e66767',
 };
 
@@ -37,7 +37,7 @@ const SEVERITY = [
 const severityColor = (seconds) =>
   (SEVERITY.find((band) => (seconds ?? 0) < band.max) || SEVERITY[SEVERITY.length - 1]).color;
 
-const CATEGORY_COLOR = { ICE: C.ice, IC: C.ic, EC: C.ec, ECE: C.ec };
+const CATEGORY_COLOR = { ICE: C.ice, IC: C.ic, EC: C.ec, ECE: C.ece };
 const categoryColor = (name) => CATEGORY_COLOR[name] || C.oth;
 
 /* --- small helpers -------------------------------------------------------- */
@@ -364,7 +364,13 @@ function renderCategories(rows) {
     `${sorted[sorted.length - 1].route_category} is best at ${fmt(minutes(sorted[sorted.length - 1].mean_delay_seconds))} min.`);
 }
 
+/* The API reports arrival and departure delay separately and leaves both null
+   where it has no prediction (typically a trip's first and last calls). Those
+   are dropped rather than plotted as zero, which would read as "on time". */
+const callDelay = (row) => (row.arrival_delay ?? row.departure_delay ?? null);
+
 function renderPropagation(rows, label) {
+  rows = (rows || []).filter((r) => callDelay(r) !== null);
   if (!rows || rows.length < 2) {
     showEmpty('chart-propagation', 'Select a service', 'Choose a row from the table to trace how its delay builds along the route.');
     return;
@@ -384,7 +390,7 @@ function renderPropagation(rows, label) {
     },
     yAxis: valueAxis('min'),
     series: [{
-      type: 'line', data: rows.map((r) => minutes(r.delay_seconds)),
+      type: 'line', data: rows.map((r) => minutes(callDelay(r))),
       smooth: 0.2, symbolSize: 8,
       lineStyle: { width: 2.5, color: C.d2 },
       itemStyle: { color: C.d2, borderColor: C.panel, borderWidth: 2 },
@@ -393,8 +399,8 @@ function renderPropagation(rows, label) {
     }],
   });
 
-  const first = minutes(rows[0].delay_seconds);
-  const last = minutes(rows[rows.length - 1].delay_seconds);
+  const first = minutes(callDelay(rows[0]));
+  const last = minutes(callDelay(rows[rows.length - 1]));
   const gained = last - first;
   setReading('read-propagation', gained > 5 ? 'bad' : gained > 1 ? 'warn' : 'good',
     `${label} left its first tracked stop ${fmt(first)} min late and is ${fmt(last)} min late by ${rows[rows.length - 1].stop_name}. ` +
@@ -416,7 +422,7 @@ function renderWorstTrips(rows) {
                 aria-label="Trace ${r.route_name || r.trip_id}">
       <td>${r.route_name || r.trip_id}</td>
       <td><span class="tag" style="color:${categoryColor(r.route_category)}">${r.route_category || '—'}</span></td>
-      <td>${r.stop_name || '—'}</td>
+      <td class="num">${r.stops ?? '—'}</td>
       <td class="num" style="color:${colour}">+${fmt(minutes(r.max_delay_seconds), 0)}</td>
     </tr>`;
   }).join('');
