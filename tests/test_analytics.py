@@ -154,3 +154,45 @@ def test_delay_distribution_buckets_delays_into_bands(seeded):
     labels = [r["band"] for r in rows]
     assert "on time" in labels[0].lower() or "<" in labels[0]
     assert sum(r["stops"] for r in rows) == 7
+
+
+# --- cancellations ---------------------------------------------------------
+
+def test_cancellations_counts_skipped_stops_and_affected_trips(warehouse):
+    warehouse.insert_stop_time_updates([rec("A", 0, 0, "S1"), rec("A", 1, 60, "S2")])
+    with warehouse.conn.cursor() as cur:
+        cur.execute("UPDATE stop_time_updates SET schedule_relationship='SKIPPED' "
+                    "WHERE trip_id='A' AND stop_sequence=1")
+
+    result = analytics.cancellations(warehouse)
+    assert result["skipped_stops"] == 1
+    assert result["affected_trips"] == 1
+    assert result["total_stops"] == 2
+    assert result["skipped_pct"] == 50.0
+
+
+def test_cancellations_on_a_clean_network_are_zero_not_a_crash(warehouse):
+    result = analytics.cancellations(warehouse)
+    assert result == {"skipped_stops": 0, "affected_trips": 0, "cancelled_trips": 0,
+                      "total_stops": 0, "skipped_pct": 0.0}
+
+
+def test_cancelled_trips_are_counted_separately_from_skipped_stops(warehouse):
+    warehouse.insert_stop_time_updates([rec("A", 0, 0, "S1"), rec("B", 0, 0, "S1")])
+    with warehouse.conn.cursor() as cur:
+        cur.execute("UPDATE stop_time_updates SET trip_schedule_relationship='CANCELED' WHERE trip_id='B'")
+
+    result = analytics.cancellations(warehouse)
+    assert result["cancelled_trips"] == 1
+    assert result["skipped_stops"] == 0
+
+
+def test_skipped_stations_rank_the_most_frequently_dropped_stops(warehouse):
+    warehouse.insert_stop_time_updates([rec("A", 0, 0, "S1"), rec("B", 0, 0, "S1"), rec("C", 0, 0, "S2")])
+    with warehouse.conn.cursor() as cur:
+        cur.execute("INSERT INTO stops (stop_id, stop_name) VALUES ('S1','Berlin Hbf'),('S2','Fulda')")
+        cur.execute("UPDATE stop_time_updates SET schedule_relationship='SKIPPED'")
+
+    rows = analytics.skipped_stations(warehouse, limit=5)
+    assert rows[0]["stop_name"] == "Berlin Hbf"
+    assert rows[0]["skipped"] == 2
