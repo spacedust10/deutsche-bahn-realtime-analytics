@@ -59,3 +59,71 @@ def test_dsn_omits_empty_credentials_so_local_peer_auth_works():
     s = Settings.from_env({"PGUSER": "", "PGPASSWORD": ""})
     assert "user=" not in s.dsn()
     assert "password=" not in s.dsn()
+
+
+# --- .env loading ----------------------------------------------------------
+
+def test_load_dotenv_reads_key_value_pairs(tmp_path):
+    from dbrt.config import load_dotenv
+
+    env_file = tmp_path / ".env"
+    env_file.write_text("DB_API_KEY=abc123\nPGDATABASE=warehouse\n")
+
+    assert load_dotenv(env_file) == {"DB_API_KEY": "abc123", "PGDATABASE": "warehouse"}
+
+
+def test_load_dotenv_ignores_comments_and_blank_lines(tmp_path):
+    from dbrt.config import load_dotenv
+
+    env_file = tmp_path / ".env"
+    env_file.write_text("# a comment\n\nPGHOST=db\n   \n#PGPORT=9999\n")
+
+    assert load_dotenv(env_file) == {"PGHOST": "db"}
+
+
+def test_load_dotenv_strips_surrounding_quotes(tmp_path):
+    from dbrt.config import load_dotenv
+
+    env_file = tmp_path / ".env"
+    env_file.write_text('DB_API_KEY="quoted key"\nPGUSER=\'single\'\n')
+
+    assert load_dotenv(env_file) == {"DB_API_KEY": "quoted key", "PGUSER": "single"}
+
+
+def test_load_dotenv_keeps_equals_signs_inside_values(tmp_path):
+    from dbrt.config import load_dotenv
+
+    env_file = tmp_path / ".env"
+    env_file.write_text("PGPASSWORD=a=b=c\n")
+
+    assert load_dotenv(env_file)["PGPASSWORD"] == "a=b=c"
+
+
+def test_load_dotenv_on_a_missing_file_is_empty_not_an_error(tmp_path):
+    from dbrt.config import load_dotenv
+
+    assert load_dotenv(tmp_path / "nope.env") == {}
+
+
+def test_real_environment_wins_over_the_dotenv_file(tmp_path, monkeypatch):
+    """A deliberate export must not be silently overridden by a stale .env."""
+    from dbrt.config import Settings
+
+    env_file = tmp_path / ".env"
+    env_file.write_text("PGDATABASE=from_file\n")
+    monkeypatch.setenv("PGDATABASE", "from_shell")
+
+    assert Settings.from_env(dotenv_path=env_file).pgdatabase == "from_shell"
+
+
+def test_dotenv_values_are_used_when_the_environment_is_silent(tmp_path, monkeypatch):
+    from dbrt.config import Settings
+
+    env_file = tmp_path / ".env"
+    env_file.write_text("PGDATABASE=from_file\nDB_API_KEY=filekey\n")
+    monkeypatch.delenv("PGDATABASE", raising=False)
+    monkeypatch.delenv("DB_API_KEY", raising=False)
+
+    settings = Settings.from_env(dotenv_path=env_file)
+    assert settings.pgdatabase == "from_file"
+    assert settings.realtime_source().official is True
