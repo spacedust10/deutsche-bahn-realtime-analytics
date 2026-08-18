@@ -147,3 +147,17 @@ def test_station_geometry_excludes_stops_without_coordinates(warehouse, pg_setti
     with TestClient(create_app(pg_settings)) as c:
         names = [r["stop_name"] for r in c.get("/api/stations/geo").json()]
     assert names == ["Located"]
+
+
+def test_cancellations_endpoint_reports_skipped_stops_and_ranking(client):
+    body = client.get("/api/cancellations").json()
+    assert body["skipped_stops"] == 0
+    assert body["total_stops"] == 5
+    assert body["most_skipped"] == []
+
+
+def test_websocket_payload_includes_disruption_state(client):
+    with client.websocket_connect("/ws") as ws:
+        payload = ws.receive_json()
+    assert "cancellations" in payload
+    assert "skipped_stations" in payload

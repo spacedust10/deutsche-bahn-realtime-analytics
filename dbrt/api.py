@@ -88,6 +88,13 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
     ) -> list[dict]:
         return analytics.station_delays(warehouse(), limit=limit, min_observations=min_observations, hours=hours)
 
+    @app.get("/api/cancellations")
+    def cancellations(hours: int = Query(24, ge=1, le=168)) -> dict:
+        return {
+            **analytics.cancellations(warehouse(), hours=hours),
+            "most_skipped": analytics.skipped_stations(warehouse(), limit=10, hours=hours),
+        }
+
     @app.get("/api/stations/geo")
     def station_geometry() -> list[dict]:
         return analytics.station_geometry(warehouse())
@@ -184,5 +191,7 @@ def _dashboard_payload(warehouse: Warehouse, settings: Settings) -> dict:
         "categories": analytics.category_breakdown(warehouse),
         "distribution": analytics.delay_distribution(warehouse),
         "network": analytics.network_snapshot(warehouse, limit=400),
+        "cancellations": analytics.cancellations(warehouse),
+        "skipped_stations": analytics.skipped_stations(warehouse, limit=8),
         "worst_trips": analytics.worst_trips(warehouse, limit=8),
     }
