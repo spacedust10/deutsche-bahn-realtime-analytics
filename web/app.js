@@ -198,11 +198,13 @@ function renderTimeseries(rows) {
     yAxis: valueAxis('min'),
     series: [
       { name: '90th percentile', type: 'line', data: p90, showSymbol: false, smooth: 0.25,
-        lineStyle: { width: 2, color: C.d2 },
+        // itemStyle drives the legend swatch; lineStyle alone leaves the legend
+        // showing ECharts' default palette and disagreeing with the line.
+        itemStyle: { color: C.d2 }, lineStyle: { width: 2, color: C.d2 },
         areaStyle: { color: { type: 'linear', x: 0, y: 0, x2: 0, y2: 1, colorStops: [
           { offset: 0, color: `${C.d2}30` }, { offset: 1, color: `${C.d2}00` }] } } },
       { name: 'Mean delay', type: 'line', data: mean, showSymbol: false, smooth: 0.25,
-        lineStyle: { width: 2, color: C.ice } },
+        itemStyle: { color: C.ice }, lineStyle: { width: 2, color: C.ice } },
     ],
   });
 
@@ -426,6 +428,17 @@ function renderWorstTrips(rows) {
       <td class="num" style="color:${colour}">+${fmt(minutes(r.max_delay_seconds), 0)}</td>
     </tr>`;
   }).join('');
+
+  // Trace the worst service by default: an empty panel on load teaches nothing,
+  // and the top row is the one a reader would click anyway. Only on first
+  // population, so a live push never yanks the chart off the user's choice.
+  if (!selectedTrip) {
+    const first = body.querySelector('tr[data-trip]');
+    if (first) selectRow(first);
+  } else {
+    const still = body.querySelector(`tr[data-trip="${CSS.escape(selectedTrip)}"]`);
+    if (still) still.setAttribute('aria-selected', 'true');
+  }
 }
 
 function renderImportance(model) {
@@ -487,7 +500,11 @@ function renderIngestion(polls) {
         name: i === 0 ? 'Rows written' : 'Fetch duration',
         type: 'line', showSymbol: false, smooth: 0.25,
         data: polls.map((p) => [p.fetched_at, ((p[key] || 0) / max) * 100]),
-        lineStyle: { width: 2, color: i === 0 ? C.ice : C.oth },
+        // Two real categorical slots: C.oth is a muted text token and sits
+        // below the chroma floor, so it cannot carry series identity.
+        // itemStyle drives the legend swatch, lineStyle the drawn line; both.
+        itemStyle: { color: i === 0 ? C.ice : C.ece },
+        lineStyle: { width: 2, color: i === 0 ? C.ice : C.ece },
       };
     }),
   });
