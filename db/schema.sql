@@ -81,3 +81,22 @@ SELECT DISTINCT ON (trip_id, service_date, stop_sequence)
        route_category, feed_timestamp
 FROM   stop_time_updates
 ORDER  BY trip_id, service_date, stop_sequence, feed_timestamp DESC;
+
+-- ---------------------------------------------------------------------------
+-- Scheduled calls, loaded from the static timetable.
+--
+-- Needed only by the live map: interpolating a train's position between two
+-- stations requires knowing when it was *supposed* to be at each of them, which
+-- the realtime feed never carries (GTFS-RT publishes delays, not coordinates).
+-- Times are seconds from the start of the service day and may exceed 86400.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS stop_times (
+    trip_id           TEXT    NOT NULL,
+    stop_sequence     INTEGER NOT NULL,
+    stop_id           TEXT    NOT NULL,
+    arrival_seconds   INTEGER,
+    departure_seconds INTEGER,
+    PRIMARY KEY (trip_id, stop_sequence)
+);
+
+CREATE INDEX IF NOT EXISTS idx_stop_times_trip ON stop_times (trip_id);
