@@ -180,11 +180,11 @@ naming its red or green state.
 
 | Marker | Needs | Count | Run in CI |
 |---|---|---|---|
-| *(none)* | Nothing | 100 | Yes |
-| `postgres` | A reachable database | 45 | Yes (service container) |
+| *(none)* | Nothing | 94 | Yes |
+| `postgres` | A reachable database | 61 | Yes (service container) |
 | `network` | The live upstream feed | 7 | No |
 
-152 tests total, against 1,492 lines of package code — close to a 1:1
+162 tests total, against ~1,600 lines of package code — close to a 1:1
 test-to-source ratio.
 
 The `network` exclusion is deliberate: CI must not fail because Deutsche Bahn is
@@ -557,6 +557,6 @@ that does less.
 | API | FastAPI, uvicorn, WebSockets |
 | Frontend | Vanilla JS, Apache ECharts 5.5.1 (vendored), CSS Grid |
 | Notebook | Jupyter, matplotlib, seaborn |
-| Tests | pytest (152 tests, layered by marker) |
+| Tests | pytest (162 tests, layered by marker) |
 | CI | GitHub Actions with a PostgreSQL service container |
 | Local infra | Docker Compose, Makefile |

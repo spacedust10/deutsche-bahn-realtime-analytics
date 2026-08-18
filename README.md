@@ -161,7 +161,7 @@ GTFS-RT feed  --HTTPS+ETag-->  FeedClient
 
 ## Tests
 
-Built test-first. 160 tests across unit, database, API and live-feed layers.
+Built test-first. 162 tests across unit, database, API and live-feed layers.
 
 ```bash
 make test
