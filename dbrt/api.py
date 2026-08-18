@@ -88,6 +88,10 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
     ) -> list[dict]:
         return analytics.station_delays(warehouse(), limit=limit, min_observations=min_observations, hours=hours)
 
+    @app.get("/api/stations/geo")
+    def station_geometry() -> list[dict]:
+        return analytics.station_geometry(warehouse())
+
     @app.get("/api/categories")
     def categories(hours: int = Query(24, ge=1, le=168)) -> list[dict]:
         return analytics.category_breakdown(warehouse(), hours=hours)

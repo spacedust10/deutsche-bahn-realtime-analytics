@@ -235,3 +235,18 @@ def delay_distribution(warehouse, hours: int = 24) -> list[dict]:
     )
     # The numeric prefix only exists to force sort order; strip it for display.
     return [{"band": r[0].split(":", 1)[1], "stops": r[1]} for r in rows]
+
+
+def station_geometry(warehouse) -> list[dict]:
+    """Every located station, for the map backdrop.
+
+    Static reference data: the dashboard fetches it once and reuses it, rather
+    than shipping 1.2k coordinates in every realtime push.
+    """
+    rows = warehouse.fetchall(
+        """SELECT stop_id, stop_name, stop_lat, stop_lon
+           FROM   stops
+           WHERE  stop_lat IS NOT NULL AND stop_lon IS NOT NULL
+           ORDER  BY stop_name"""
+    )
+    return [{"stop_id": r[0], "stop_name": r[1], "stop_lat": r[2], "stop_lon": r[3]} for r in rows]
