@@ -16,6 +16,7 @@ const PUNCTUAL_SECONDS = 360;  // DB's own definition of "on time".
 
 const charts = {};
 let selectedTrip = null;
+let stationGeo = [];   // Static station coordinates, fetched once.
 
 // ---------------------------------------------------------------------------
 // helpers
@@ -172,14 +173,21 @@ function renderMap(trains) {
     yAxis: { type: 'value', min: 47.1, max: 55.2, show: false },
     series: [
       {
+        // Every long-distance station, dimmed: without it 130 trains read as
+        // scattered dots rather than as a rail network over Germany.
+        type: 'scatter', silent: true, symbolSize: 2.2, animation: false,
+        data: stationGeo.map((s) => [s.stop_lon, s.stop_lat]),
+        itemStyle: { color: '#2b3a4d', opacity: 0.75 },
+      },
+      {
         type: 'scatter', data: rest.map(point),
-        symbolSize: (v) => 5 + Math.min(v[2] / 240, 8),
-        itemStyle: { opacity: 0.85 },
+        symbolSize: (v) => 7 + Math.min(v[2] / 200, 9),
+        itemStyle: { opacity: 0.92, borderColor: 'rgba(0,0,0,.5)', borderWidth: 0.5 },
       },
       {
         // Ripple draws the eye to the trains that are actually in trouble.
         type: 'effectScatter', data: late.map(point),
-        symbolSize: (v) => 7 + Math.min(v[2] / 240, 11),
+        symbolSize: (v) => 9 + Math.min(v[2] / 200, 12),
         rippleEffect: { brushType: 'stroke', scale: 3, period: 3.4 },
         zlevel: 1,
       },
@@ -383,6 +391,14 @@ function connect() {
   socket.onerror = () => socket.close();
 }
 
+async function loadStationGeo() {
+  try {
+    stationGeo = await (await fetch('/api/stations/geo')).json();
+  } catch (err) {
+    console.warn('station geometry unavailable', err);
+  }
+}
+
 async function loadModelInfo() {
   try {
     const info = await (await fetch('/api/model')).json();
@@ -397,6 +413,6 @@ async function loadModelInfo() {
 
 window.addEventListener('resize', () => Object.values(charts).forEach((c) => c.resize()));
 
-connect();
+loadStationGeo().then(connect);
 loadModelInfo();
 setInterval(loadModelInfo, 60000);
