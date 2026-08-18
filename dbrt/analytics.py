@@ -451,3 +451,65 @@ def _place_train(trip_id: str, service_date: dt.date, calls: list[tuple], at: dt
                     "from_stop": call["name"], "to_stop": call["name"],
                     "delay_seconds": call["delay"], "bearing": 0.0, "status": "at_station"}
     return None
+
+
+def network_geometry(warehouse) -> dict[str, Any]:
+    """The rail network as GeoJSON LineStrings, one per physical link.
+
+    Consecutive calls are paired with LEAD() and de-duplicated in SQL: hundreds
+    of trips run over the same track, and the map only needs each link once.
+    """
+    rows = warehouse.fetchall(
+        """
+        WITH links AS (
+            SELECT stop_id AS from_id,
+                   LEAD(stop_id) OVER (PARTITION BY trip_id ORDER BY stop_sequence) AS to_id
+            FROM   stop_times
+        )
+        SELECT DISTINCT a.stop_lon, a.stop_lat, b.stop_lon, b.stop_lat
+        FROM   links l
+        JOIN   stops a ON a.stop_id = l.from_id
+        JOIN   stops b ON b.stop_id = l.to_id
+        WHERE  l.to_id IS NOT NULL
+          AND  a.stop_lat IS NOT NULL AND a.stop_lon IS NOT NULL
+          AND  b.stop_lat IS NOT NULL AND b.stop_lon IS NOT NULL
+        """
+    )
+    return {
+        "type": "FeatureCollection",
+        "features": [
+            {
+                "type": "Feature",
+                "properties": {},
+                "geometry": {"type": "LineString", "coordinates": [[r[0], r[1]], [r[2], r[3]]]},
+            }
+            for r in rows
+        ],
+    }
+
+
+def station_points(warehouse, min_calls: int = 1) -> dict[str, Any]:
+    """Stations as GeoJSON Points, weighted by how much traffic they see."""
+    rows = warehouse.fetchall(
+        """
+        SELECT s.stop_id, s.stop_name, s.stop_lon, s.stop_lat, count(st.trip_id) AS calls
+        FROM   stops s
+        JOIN   stop_times st ON st.stop_id = s.stop_id
+        WHERE  s.stop_lat IS NOT NULL AND s.stop_lon IS NOT NULL
+        GROUP  BY s.stop_id, s.stop_name, s.stop_lon, s.stop_lat
+        HAVING count(st.trip_id) >= %s
+        ORDER  BY calls DESC
+        """,
+        (min_calls,),
+    )
+    return {
+        "type": "FeatureCollection",
+        "features": [
+            {
+                "type": "Feature",
+                "properties": {"stop_id": r[0], "name": r[1], "calls": r[4]},
+                "geometry": {"type": "Point", "coordinates": [r[2], r[3]]},
+            }
+            for r in rows
+        ],
+    }
