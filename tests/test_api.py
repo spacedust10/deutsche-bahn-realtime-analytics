@@ -161,3 +161,21 @@ def test_websocket_payload_includes_disruption_state(client):
         payload = ws.receive_json()
     assert "cancellations" in payload
     assert "skipped_stations" in payload
+
+
+def test_dashboard_endpoint_returns_the_same_payload_as_the_websocket(client):
+    """First paint must not wait for a WebSocket round trip, and the dashboard
+    has to render at all where WebSockets are blocked."""
+    rest = client.get("/api/dashboard").json()
+    with client.websocket_connect("/ws") as ws:
+        pushed = ws.receive_json()
+
+    assert set(rest) == set(pushed)
+    assert rest["summary"]["punctuality"]["total_stops"] == pushed["summary"]["punctuality"]["total_stops"]
+
+
+def test_dashboard_endpoint_is_populated_not_empty(client):
+    body = client.get("/api/dashboard").json()
+    assert body["network"]
+    assert body["distribution"]
+    assert body["summary"]["observations_stored"] == 5
