@@ -778,7 +778,28 @@ page.
 - **An instruction that was not true.** The model panel's empty state named a
   command that did not exist. It now names `make train`, which does.
 
-### 12.8 The model still loses, and says so
+### 12.8 Two collectors, quietly doubling the load
+
+The ingestion panel reported alternating polls of ~2,050 rows and **0 rows**,
+and poll spacing that wandered between 10 and 39 seconds instead of holding at
+30. Both had the same cause: two collector processes were running, one left
+over from an earlier session.
+
+Nothing corrupted, which is the point. The append-only fact table is keyed on
+`(trip_id, service_date, stop_sequence, feed_timestamp)`, so the second process
+fetching the same feed content inserted nothing at all. `ON CONFLICT DO NOTHING`
+absorbed the duplication exactly as designed, and the 0-row polls in the chart
+are that guarantee being visible rather than a fault.
+
+What it did cost was bandwidth: two processes pulling ~40 MB each meant double
+the traffic against a donation-funded server, for zero additional data.
+
+The lesson is about the check, not the pipeline. The process check used to
+decide whether a collector was already running was `pgrep -f "python3 -m dbrt$"`,
+which silently matched nothing, and a false negative from a liveness check reads
+exactly like "nothing is running".
+
+### 12.9 The model still loses, and says so
 
 `HistGradientBoostingRegressor` exposes no `feature_importances_`, so the
 importance panel had been built against a field the backend never produced.
