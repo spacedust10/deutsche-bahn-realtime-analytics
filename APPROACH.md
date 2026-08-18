@@ -346,3 +346,170 @@ rather than letting a protobuf `DecodeError` escape.
 
 The open fallback payload is ~45 MB. A `304 Not Modified` turns a poll into a few
 hundred bytes. Measured: ~50 MB and ~17 s per changed poll.
+
+---
+
+## 7. The dashboard
+
+### Time series first
+
+The architecture asks for realtime analysis, so the largest panel is the one that
+shows change over time: mean delay as a filled area, P90 as a dashed line, and
+punctuality on a second axis. One glance answers whether the network is
+recovering or degrading — which a table of current values cannot.
+
+### Animation carries information, not decoration
+
+Charts are created **once** and updated with `setOption`, so ECharts tweens
+between states. Recreating them on each push would flicker and discard the
+transition. When a bar grows, the movement itself is the signal that something
+changed.
+
+Delayed trains use `effectScatter` — a ripple, not a static dot — so severity is
+visible before any number is read. KPI counters tween from their previous value
+for the same reason.
+
+`prefers-reduced-motion` disables all of it.
+
+### One socket, not six pollers
+
+The WebSocket pushes the whole dashboard payload every five seconds. Six REST
+endpoints on browser timers would triple the query load and still lag the
+collector.
+
+The page nonetheless paints from `GET /api/dashboard` on load, then hands over to
+the socket. This was added after a headless render exposed the flaw: every chart
+sat blank until the first push, and stayed blank wherever WebSockets are blocked.
+
+### The map is stations, not vehicles
+
+GTFS-RT `TripUpdate` carries no coordinates — only `VehiclePosition` does, and
+the long-distance feed does not publish it. Trains are therefore drawn at their
+last reported station, which is honest about what the data supports.
+
+131 trains alone read as scattered dots. Drawing all ~1,200 long-distance
+stations behind them, dimmed, makes the panel legible as Germany's rail network.
+Station geometry is static, so it is fetched once rather than riding along in
+every five-second push.
+
+---
+
+## 8. What the live data actually showed
+
+From a single collection window (~34,000 stop-time observations, 144 distinct
+long-distance services):
+
+| Measure | Value |
+|---|---|
+| Punctuality (<6 min) | **79.2 %** |
+| Mean delay | 5.2 min |
+| Worst single delay | 91 min |
+| Skipped station calls | 1.84 % of calls, 10 services |
+| ICE punctuality | 80.2 % (mean 5.5 min) |
+| IC punctuality | 88.7 % (mean 1.6 min) |
+| EC / ECE | 100 % on this sample — EC ran *early* on average |
+
+The propagation view caught a real failure: an ICE running on time through
+Hamburg and Lüneburg, then jumping to **+91 minutes at Uelzen** and holding that
+delay for the rest of its route to Frankfurt. That shape — a step, not a ramp —
+is exactly why 55% of stop-to-stop deltas are zero, and why the persistence
+baseline is so hard to beat.
+
+---
+
+## 9. Limitations
+
+Stated plainly, because a portfolio project that overclaims is worse than one
+that does less.
+
+- **The default source is the open feed, not DB's own.** The official path is
+  implemented and verified as reachable and key-gated, but running it needs
+  credentials. The active source is always displayed.
+- **The model's margin is small.** +4.4% over persistence on roughly an hour of
+  history. Real gains need days of data, weather, infrastructure incidents and
+  upstream-train state — none of which is in a GTFS-RT feed.
+- **Positions are station-level.** No `VehiclePosition` in this feed, so there is
+  no interpolation between stops.
+- **Single-process.** One shared PostgreSQL connection, marked in the code. A
+  connection pool is the upgrade if the API ever fans out to workers.
+- **Service alerts are not ingested.** The endpoint is configured and stop-level
+  `SKIPPED` cancellations are captured, but the alerts stream itself is not yet
+  decoded.
+- **Sample window is short.** The figures above are one morning, not a trend.
+  Punctuality varies enormously by hour, season and weather.
+
+### Next steps, in order of value
+
+1. Run the collector for weeks — every number here improves with history, and the
+   model most of all.
+2. Ingest `gtfsrt_service_alerts.proto` for incident context.
+3. Add upstream-train state as a feature; delay propagates *between* services,
+   not just along one.
+4. Partition `stop_time_updates` by month once it passes tens of millions of rows.
+
+---
+
+## 10. References
+
+### Data sources
+
+- **DB Fernverkehr GTFS / GTFS-RT (official, primary)** —
+  https://developer-docs.deutschebahn.com/doku/datenstroeme/stroeme-gtfs-10582270
+  Endpoints, `DB-Api-Key` authentication, polling intervals, feed horizons.
+- **Deutsche Bahn Developer Portal** — https://developer-docs.deutschebahn.com/
+- **gtfs.de realtime feed (open fallback)** — https://gtfs.de/en/realtime/
+  `https://realtime.gtfs.de/realtime-free.pb`, CC BY-SA 4.0, 10-second updates.
+- **gtfs.de long-distance timetable** — https://gtfs.de/en/feeds/de_fv/
+  `https://download.gtfs.de/germany/fv_free/latest.zip`, ICE/IC/EC/ECE/EN/RJ.
+- **DELFI e.V.** — https://www.delfi.de/ — the NeTEx dataset the open feeds derive from.
+
+### Standards
+
+- **GTFS Realtime reference** — https://gtfs.org/documentation/realtime/reference/
+  `TripUpdate`, `StopTimeUpdate`, `ScheduleRelationship` semantics.
+- **GTFS Realtime `.proto`** — https://gtfs.org/documentation/realtime/proto/
+- **GTFS Schedule reference** — https://gtfs.org/documentation/schedule/reference/
+  `routes.txt`, `trips.txt`, `stops.txt`, `parent_station`.
+- **Google Transit — GTFS Realtime** — https://developers.google.com/transit/gtfs-realtime
+- **Protocol Buffers** — https://protobuf.dev/
+
+### Libraries
+
+- **gtfs-realtime-bindings** — https://github.com/MobilityData/gtfs-realtime-bindings
+- **psycopg2 — `execute_values`** — https://www.psycopg.org/docs/extras.html
+- **PostgreSQL `DISTINCT ON`** — https://www.postgresql.org/docs/current/sql-select.html
+- **PostgreSQL aggregate `FILTER`** — https://www.postgresql.org/docs/current/sql-expressions.html
+- **scikit-learn `HistGradientBoostingRegressor`** — https://scikit-learn.org/stable/modules/generated/sklearn.ensemble.HistGradientBoostingRegressor.html
+- **FastAPI WebSockets** — https://fastapi.tiangolo.com/advanced/websockets/
+- **FastAPI lifespan events** — https://fastapi.tiangolo.com/advanced/events/
+- **Apache ECharts** — https://echarts.apache.org/en/option.html
+- **pytest markers** — https://docs.pytest.org/en/stable/example/markers.html
+
+### Domain
+
+- **DB punctuality definition** — https://www.deutschebahn.com/de/konzern/im_blickpunkt/puenktlichkeit-6878476
+  The under-6-minutes threshold used throughout.
+- **DB Open Data portal** — https://data.deutschebahn.com/
+
+---
+
+## 11. Technology summary
+
+| Area | Technology |
+|---|---|
+| Language | Python 3.13 |
+| Realtime standard | GTFS-Realtime 2.0 |
+| Wire format | Protocol Buffers |
+| Feed transport | HTTPS with ETag conditional requests |
+| Decoding | gtfs-realtime-bindings, protobuf |
+| HTTP client | requests |
+| Database | PostgreSQL 15 |
+| Driver | psycopg2 (`execute_values` batching) |
+| Analysis | SQL, pandas, numpy |
+| ML | scikit-learn (HistGradientBoostingRegressor), joblib |
+| API | FastAPI, uvicorn, WebSockets |
+| Frontend | Vanilla JS, Apache ECharts 5.5.1 (vendored), CSS Grid |
+| Notebook | Jupyter, matplotlib, seaborn |
+| Tests | pytest (152 tests, layered by marker) |
+| CI | GitHub Actions with a PostgreSQL service container |
+| Local infra | Docker Compose, Makefile |
