@@ -28,10 +28,11 @@ import joblib
 import numpy as np
 import pandas as pd
 from sklearn.ensemble import HistGradientBoostingRegressor
-from sklearn.metrics import mean_absolute_error
-from sklearn.model_selection import train_test_split
+from sklearn.metrics import mean_absolute_error, mean_squared_error
+from sklearn.model_selection import KFold
 
 MIN_TRAINING_SAMPLES = 40
+CV_FOLDS = 5
 
 HISTORY_SQL = """
 SELECT trip_id, service_date, stop_sequence,
@@ -105,7 +106,20 @@ class DelayModel:
         self.columns: pd.Index | None = None
         self.metrics: dict = {}
 
-    def train(self, observations: pd.DataFrame, test_size: float = 0.25, random_state: int = 42) -> dict:
+    def _estimator(self, random_state: int) -> HistGradientBoostingRegressor:
+        return HistGradientBoostingRegressor(
+            loss="absolute_error", max_iter=300, learning_rate=0.08,
+            max_depth=6, random_state=random_state,
+        )
+
+    def train(self, observations: pd.DataFrame, folds: int = CV_FOLDS, random_state: int = 42) -> dict:
+        """Score by cross-validation, then fit the shipped model on everything.
+
+        A single hold-out split on a few thousand pairs moved the reported
+        improvement by several points between runs — noise presented as signal.
+        Averaging folds gives a number worth quoting, and the standard
+        deviation across folds says how much to trust it.
+        """
         pairs = next_stop_pairs(observations)
         if len(pairs) < MIN_TRAINING_SAMPLES:
             raise ValueError(
@@ -117,28 +131,43 @@ class DelayModel:
         # Learn the correction, not the absolute delay: see module docstring.
         delta = y - X["delay"]
 
-        X_train, X_test, d_train, d_test = train_test_split(
-            X, delta, test_size=test_size, random_state=random_state
-        )
-        self.model = HistGradientBoostingRegressor(
-            loss="absolute_error", max_iter=300, learning_rate=0.08,
-            max_depth=6, random_state=random_state,
-        )
-        self.model.fit(X_train, d_train)
+        folds = max(2, min(folds, len(pairs) // 10))
+        splitter = KFold(n_splits=folds, shuffle=True, random_state=random_state)
 
-        y_test = d_test + X_test["delay"]
-        predicted = X_test["delay"] + self.model.predict(X_test)
-        mae = float(mean_absolute_error(y_test, predicted))
-        # Baseline is measured on the same held-out rows, otherwise the
-        # comparison flatters whichever split happens to be easier.
-        base = float(mean_absolute_error(y_test, X_test["delay"]))
+        fold_mae, fold_base, fold_rmse, fold_base_rmse = [], [], [], []
+        for train_idx, test_idx in splitter.split(X):
+            X_train, X_test = X.iloc[train_idx], X.iloc[test_idx]
+            d_train, d_test = delta.iloc[train_idx], delta.iloc[test_idx]
+
+            estimator = self._estimator(random_state)
+            estimator.fit(X_train, d_train)
+
+            y_test = d_test + X_test["delay"]
+            predicted = X_test["delay"] + estimator.predict(X_test)
+            fold_mae.append(float(mean_absolute_error(y_test, predicted)))
+            # Baseline scored on the identical fold, otherwise the comparison
+            # flatters whichever split happens to be easier.
+            fold_base.append(float(mean_absolute_error(y_test, X_test["delay"])))
+            # RMSE is reported too: MAE rewards the median, RMSE the mean, and
+            # quoting only one hides which behaviour the model was tuned for.
+            fold_rmse.append(float(mean_squared_error(y_test, predicted)) ** 0.5)
+            fold_base_rmse.append(float(mean_squared_error(y_test, X_test["delay"])) ** 0.5)
+
+        mae = float(np.mean(fold_mae))
+        base = float(np.mean(fold_base))
+
+        # The measurement is done; the shipped model gets all the data.
+        self.model = self._estimator(random_state)
+        self.model.fit(X, delta)
 
         self.metrics = {
             "samples": int(len(pairs)),
-            "train_samples": int(len(X_train)),
-            "test_samples": int(len(X_test)),
+            "cv_folds": folds,
             "mae_seconds": round(mae, 1),
+            "mae_std_seconds": round(float(np.std(fold_mae)), 1),
             "baseline_mae_seconds": round(base, 1),
+            "rmse_seconds": round(float(np.mean(fold_rmse)), 1),
+            "baseline_rmse_seconds": round(float(np.mean(fold_base_rmse)), 1),
             "improvement_pct": round(100 * (base - mae) / base, 1) if base else 0.0,
             "features": list(self.columns),
         }
