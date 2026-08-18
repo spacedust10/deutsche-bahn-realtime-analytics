@@ -428,14 +428,17 @@ sat blank until the first push, and stayed blank wherever WebSockets are blocked
 
 ### The map is stations, not vehicles
 
+*(Superseded in section 12. GTFS-RT still carries no coordinates, but positions
+are now derived from the timetable rather than snapped to the last station.)*
+
 GTFS-RT `TripUpdate` carries no coordinates — only `VehiclePosition` does, and
-the long-distance feed does not publish it. Trains are therefore drawn at their
+the long-distance feed does not publish it. Trains were therefore drawn at their
 last reported station, which is honest about what the data supports.
 
 131 trains alone read as scattered dots. Drawing all ~1,200 long-distance
 stations behind them, dimmed, makes the panel legible as Germany's rail network.
 Station geometry is static, so it is fetched once rather than riding along in
-every five-second push.
+every push.
 
 ---
 
@@ -591,3 +594,218 @@ collector to Deutsche Bahn's own feed.
 | Tests | pytest (162 tests, layered by marker) |
 | CI | GitHub Actions with a PostgreSQL service container |
 | Local infra | Docker Compose, Makefile |
+
+---
+
+## 12. Second iteration: Stellwerk
+
+The first build worked but had three problems: it wore Deutsche Bahn's
+trademark, its map showed trains parked at stations, and its charts broke two
+rules of data visualisation that matter.
+
+### 12.1 The identity was a liability
+
+The dashboard's mark was the letters **DB** in Deutsche Bahn's brand red. On a
+public portfolio repository that reproduces a registered trademark and implies
+official affiliation with an operator that has not endorsed anything here.
+
+It was also a colour problem. In a delay dashboard red has to mean *late*. A
+brand red sitting in the header competes with the severity scale for the same
+meaning, and the reader has to learn which red is which.
+
+Both are fixed by the same change. The project is now **Stellwerk**, the German
+word for the signal box that watches and routes a rail network, drawn as a track
+turnout with a signal showing clear. Brand red survives only as a CSS token
+reserved for identity, never applied to data.
+
+### 12.2 Colour was computed, not chosen
+
+Delay is a magnitude, so it wants a sequential scale. The intuitive choice
+(green to red) is multi-hue, which is normally forbidden because a rainbow ramp
+loses its order under colour-vision deficiency. Semantic heat is the documented
+exception, on one condition: the order has to survive without hue.
+
+That means monotone lightness. The first attempt failed exactly as predicted:
+
+```
+[FAIL] CVD separation   worst all-pairs #d55181 vs #199e70  dE 1.6 (deutan)
+[FAIL] Normal-vision    worst all-pairs #e66767 vs #d95926  dE 7.1
+```
+
+Those four colours were all sitting in the same lightness band, so under deutan
+simulation two of them collapsed into each other. The fix was to solve for the
+steps rather than pick them: target an OKLCH lightness ladder, then search for
+the most saturated hex at each rung.
+
+| Band | Hex | OKLCH L | Contrast on panel |
+|---|---|---|---|
+| On time (<3 min) | `#007a2a` | 0.505 | 3.15:1 |
+| 3 to 6 min | `#a28500` | 0.626 | — |
+| 6 to 15 min | `#ff7406` | 0.715 | — |
+| 15 min or more | `#ff9c9c` | 0.794 | — |
+
+```
+[PASS] Lightness monotone   steps read light->dark
+[PASS] Adjacent dL          all gaps >= 0.06
+[PASS] Light-end contrast   #007a2a at 3.15:1 vs surface
+[FAIL] Single hue           hue spread 119deg
+```
+
+The remaining failure is the semantic-heat exception itself, and its condition
+is a scale legend, which the map ships. Greyscale the map and the severity order
+is still readable, which was the whole point.
+
+One collision survived into the browser and was caught on screen: the **EC**
+series colour was the same hex as the status "good" green, so the EC bar read as
+a verdict rather than an identity. EC moved to violet, which also improved
+separation from its neighbours (worst adjacent CVD dE 8.4 to 26.0).
+
+Muted body text failed too. The slate `#6b7c93` measured **4.1:1** on the panel
+surface, under the 4.5:1 floor. This is the most common contrast failure there
+is: grey text on a tinted dark ground, chosen because it looks elegant. Lifted
+to `#8195ad` (5.69:1).
+
+### 12.3 Two charts were lying
+
+**The delay chart was dual-axis.** It plotted mean delay in minutes and
+punctuality as a percentage on one plot with two scales. Where the two lines
+cross is an artefact of how the axes were aligned, not a fact about trains, and
+readers infer a relationship from it anyway. Punctuality now has its own chart.
+
+**The station bars were coloured by their own value.** Bar length already
+encodes delay; colouring the bars by the same number spends the identity channel
+re-encoding what the reader can already see. One hue now.
+
+### 12.4 The map became a real map
+
+Trains sat on their last reported station because `TripUpdate` carries no
+coordinates. But the static timetable carries `stop_times`, and a delay is a
+shift applied to a schedule. That is enough to place a train:
+
+1. Load `stop_times` into PostgreSQL (55,099 scheduled calls).
+2. For each call, actual time = scheduled time + the delay observed there.
+3. Find the segment whose window contains the requested instant.
+4. Interpolate along it, and take the bearing from the two station coordinates.
+
+`ICE 11` resolves to 48.334 N, 10.970 E, 14.6 % of the way from Augsburg Hbf to
+München-Pasing, heading 119 degrees. Roughly 300 trains resolve at once.
+
+The network underneath is derived rather than sourced: `LEAD()` over
+`stop_times` pairs consecutive calls, and `DISTINCT` collapses the hundreds of
+trips sharing each piece of track into **1,910** unique links.
+
+Rendering is **MapLibre GL JS** (BSD-3-Clause, vendored) over **OpenFreeMap**
+vector tiles (ODbL, no API key). The library is vendored like ECharts; the tiles
+cannot be, so the map degrades to network-and-trains on a dark ground when
+tiles are unreachable.
+
+MapLibre 5.x is pinned deliberately: 6.x is ESM-only and drops the UMD bundle a
+plain `<script>` tag needs.
+
+**Positions do not tween.** A GeoJSON source snaps to its new coordinates, so
+trains would teleport every ten seconds. Displayed positions are interpolated
+toward their targets on `requestAnimationFrame` across the push interval, which
+is what makes them glide. Under `prefers-reduced-motion` they snap instead.
+
+**The time slider** replays history. Scrubbing calls `/api/positions?at=...`,
+which considers only observations published at or before that instant, so
+replaying 03:00 shows what was known at 03:00 rather than back-dating later
+corrections.
+
+### 12.5 Ten seconds, measured rather than assumed
+
+The upstream stream republishes every 10s, so the obvious reading is "poll every
+10s". Measuring first changed the answer:
+
+```
+transfer = 43,668,650 bytes    time = 9.29s    encoding = none
+```
+
+No gzip. 43.7 MB per fetch, and the download alone takes 9.3 s, so a 10 s poll
+means downloading continuously at ~4.4 MB/s, about **377 GB/day**, against a
+donation-funded community server.
+
+The dashboard is what needs to feel live, and it does: the browser refreshes on
+a 10 s heartbeat, matching the feed's own rhythm. The collector polls at 30 s,
+and the header shows a **data age** counter that ticks every second, so the page
+never implies data is fresher than it is. With a DB API key the official
+long-distance feed is far smaller and a true 10 s fetch becomes reasonable.
+
+### 12.6 The heartbeat did not fit
+
+The 10 s push was set, and the browser silently fell back to polling. The
+payload was taking **8 to 18 seconds** to build, so the socket loop never
+finished a cycle. Two independent causes:
+
+**An unbounded query.** Every analytic reads `current_stop_delays`, a
+`DISTINCT ON` over the whole fact table with no time bound, so cost grew with
+collected history. An index matching the view's `ORDER BY` exactly let it
+resolve by index scan instead of sorting 417k rows.
+
+| Query | Before | After |
+|---|---|---|
+| punctuality | 0.37 s | 0.16 s |
+| stations | 0.83 s | 0.15 s |
+| categories | 0.83 s | 0.19 s |
+| cancellations | 0.89 s | 0.22 s |
+| **total** | **6.3 s** | **2.0 s** |
+
+**One connection, several threads.** A single psycopg2 connection served both
+FastAPI's threadpool and the WebSocket's `asyncio.to_thread` calls. psycopg2
+serialises concurrent users of one connection, which is where the 8-to-18 second
+spread came from. `Warehouse` is now thread-affine.
+
+End to end: **18.3 s to 1.75 s**, and stable across repeats.
+
+### 12.7 What the browser caught that the tests did not
+
+Every test passed while these were broken. They were all found by opening the
+page.
+
+- **Delay propagation plotted every stop at zero.** The endpoint returns
+  `arrival_delay` and `departure_delay`; the chart read `delay_seconds`. Every
+  lookup was `undefined`, coerced to `0`, and rendered as a perfectly punctual
+  train. A service the table showed at +124 min drew as a flat line on zero.
+  Nulls are now dropped rather than plotted, because a call with no prediction
+  is not an on-time call.
+- **A column that was always empty.** The worst-services table showed "Last
+  reported" from a payload that carries a call count, not a station.
+- **The map ate the page scroll.** Wheeling over the map zoomed it instead of
+  scrolling past, trapping the reader. Fixed with cooperative gestures.
+- **Two stranded grid items.** Six metrics in an auto-fit grid resolved to five
+  columns and left one tile alone on its own row; three panels in a two-column
+  row stranded the third the same way.
+- **An instruction that was not true.** The model panel's empty state named a
+  command that did not exist. It now names `make train`, which does.
+
+### 12.8 The model still loses, and says so
+
+`HistGradientBoostingRegressor` exposes no `feature_importances_`, so the
+importance panel had been built against a field the backend never produced.
+Importance is now measured by permutation and normalised to shares.
+
+Trained on the collected history, the honest result:
+
+| Measure | Model | Persistence baseline |
+|---|---|---|
+| MAE | 159.7 s | 159.0 s |
+| RMSE | 354.0 s | 352.9 s |
+
+The model is **0.4 % worse than assuming nothing changes**. Section 5.2c already
+established why: about half of stop-to-stop delay deltas are exactly zero, and
+above that rate "no change" is the MAE-optimal prediction by construction.
+
+The panel reports this in both directions rather than only when the model wins.
+A metric that can only deliver good news is advertising, not measurement.
+
+---
+
+## 13. Technology added in this iteration
+
+| Area | Technology |
+|---|---|
+| Map rendering | MapLibre GL JS 5.24.0 (BSD-3-Clause, vendored) |
+| Basemap tiles | OpenFreeMap vector tiles (ODbL, no API key) |
+| Basemap data | OpenStreetMap contributors |
+| Colour space | OKLCH, validated for CVD separation and contrast |
+| Feature importance | scikit-learn `permutation_importance` |

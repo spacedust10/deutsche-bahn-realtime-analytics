@@ -22,17 +22,21 @@ itself has a standard deviation near 780s:
 """
 from __future__ import annotations
 
+import datetime as dt
+
 from pathlib import Path
 
 import joblib
 import numpy as np
 import pandas as pd
 from sklearn.ensemble import HistGradientBoostingRegressor
+from sklearn.inspection import permutation_importance
 from sklearn.metrics import mean_absolute_error, mean_squared_error
 from sklearn.model_selection import KFold
 
 MIN_TRAINING_SAMPLES = 40
 CV_FOLDS = 5
+PERMUTATION_REPEATS = 10  # Enough to average out shuffle noise on a few thousand rows.
 
 HISTORY_SQL = """
 SELECT trip_id, service_date, stop_sequence,
@@ -162,6 +166,7 @@ class DelayModel:
 
         self.metrics = {
             "samples": int(len(pairs)),
+            "algorithm": "HistGradientBoostingRegressor",
             "cv_folds": folds,
             "mae_seconds": round(mae, 1),
             "mae_std_seconds": round(float(np.std(fold_mae)), 1),
@@ -169,9 +174,37 @@ class DelayModel:
             "rmse_seconds": round(float(np.mean(fold_rmse)), 1),
             "baseline_rmse_seconds": round(float(np.mean(fold_base_rmse)), 1),
             "improvement_pct": round(100 * (base - mae) / base, 1) if base else 0.0,
+            # Stated outright rather than left for the reader to infer from two
+            # numbers. On this data persistence is genuinely hard to beat.
+            "beats_baseline": bool(mae < base),
             "features": list(self.columns),
+            "feature_importance": self._permutation_importance(X, delta, random_state),
+            "trained_at": dt.datetime.now(tz=dt.timezone.utc).isoformat(),
         }
         return self.metrics
+
+    def _permutation_importance(self, X: pd.DataFrame, delta: pd.Series, random_state: int) -> list[dict]:
+        """Importance by permutation, normalised to shares of the total.
+
+        Gradient-boosted histogram trees expose no feature_importances_, so the
+        only honest answer is to measure how much shuffling each column costs
+        the fitted model. Shares (not raw drops) are what the dashboard plots.
+        """
+        result = permutation_importance(
+            self.model, X, delta,
+            n_repeats=PERMUTATION_REPEATS,
+            random_state=random_state,
+            scoring="neg_mean_absolute_error",
+        )
+        # A feature can score slightly negative by chance; clamp so shares stay
+        # meaningful rather than letting noise produce a negative slice.
+        drops = np.clip(result.importances_mean, 0, None)
+        total = float(drops.sum())
+        rows = [
+            {"feature": str(name), "importance": round(float(drop / total) if total else 0.0, 4)}
+            for name, drop in zip(X.columns, drops)
+        ]
+        return sorted(rows, key=lambda r: r["importance"], reverse=True)
 
     def predict(self, pairs: pd.DataFrame) -> np.ndarray:
         if self.model is None:
@@ -194,3 +227,4 @@ class DelayModel:
         instance.columns = payload["columns"]
         instance.metrics = payload.get("metrics", {})
         return instance
+

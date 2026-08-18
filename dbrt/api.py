@@ -134,7 +134,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def model_info() -> dict:
         model = state["model"]
         if model is None:
-            return {"trained": False, "detail": "no model on disk; run scripts/train_model.py"}
+            return {"trained": False, "detail": "no model on disk; run `make train`"}
         return {"trained": True, **model.metrics}
 
     @app.get("/api/geo/network")

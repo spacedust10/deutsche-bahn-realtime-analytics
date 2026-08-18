@@ -431,7 +431,7 @@ function renderWorstTrips(rows) {
 function renderImportance(model) {
   if (!model || !model.feature_importance || !model.feature_importance.length) {
     showEmpty('chart-importance', 'Model not trained yet',
-      'Run <code>python -m dbrt.ml train</code> once the warehouse has a few hundred observations.');
+      'Run <code>make train</code> once the warehouse has a few hundred observations.');
     return;
   }
   clearEmpty('chart-importance');
@@ -454,9 +454,16 @@ function renderImportance(model) {
   });
 
   const top = rows[rows.length - 1];
-  setReading('read-model', 'good',
-    `The model leans hardest on ${top.feature} (${Math.round(top.importance * 100)}% of total gain). ` +
-    (model.mae_seconds ? `Cross-validated MAE is ${fmt(minutes(model.mae_seconds))} min against a ${fmt(minutes(model.baseline_mae_seconds))} min naive baseline.` : ''));
+  // Reported plainly in both directions. On stop-to-stop delay, "assume no
+  // change" is a genuinely strong baseline, and a panel that only ever says
+  // the model won would be advertising rather than measuring.
+  const beat = model.beats_baseline;
+  const comparison = model.mae_seconds
+    ? `Cross-validated MAE ${fmt(minutes(model.mae_seconds))} min vs a ${fmt(minutes(model.baseline_mae_seconds))} min persistence baseline` +
+      (beat ? `, ${fmt(Math.abs(model.improvement_pct))}% better.` : `, so persistence still wins by ${fmt(Math.abs(model.improvement_pct))}%.`)
+    : '';
+  setReading('read-model', beat ? 'good' : 'warn',
+    `Strongest signal is ${top.feature} (${Math.round(top.importance * 100)}% of measured importance). ${comparison}`);
 }
 
 function renderIngestion(polls) {
