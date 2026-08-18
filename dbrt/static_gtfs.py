@@ -10,10 +10,13 @@ from __future__ import annotations
 
 import csv
 import io
+import time
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Optional
+
+import requests
 
 # Categories the architecture scopes the project to, plus the EuroCity Express
 # variant DB publishes alongside EC.
@@ -97,6 +100,37 @@ class StaticTimetable:
 
     def long_distance_trip_ids(self) -> set[str]:
         return {tid for tid in self.trips if self.is_long_distance(tid)}
+
+
+# --- download --------------------------------------------------------------
+
+STATIC_MAX_AGE_SECONDS = 12 * 3600  # DB regenerates the timetable daily.
+DOWNLOAD_TIMEOUT_SECONDS = 120
+
+
+def download_static(
+    settings,
+    dest: Path | str,
+    session=None,
+    max_age_seconds: int = STATIC_MAX_AGE_SECONDS,
+) -> Path:
+    """Fetch the timetable ZIP, reusing a recent local copy when there is one.
+
+    The timetable changes daily while the realtime feed changes every few
+    seconds, so re-downloading it on every collector start is pure waste.
+    """
+    dest = Path(dest)
+    if dest.exists() and (time.time() - dest.stat().st_mtime) < max_age_seconds:
+        return dest
+
+    source = settings.static_source()
+    session = session or requests.Session()
+    response = session.get(source.url, headers=source.headers, timeout=DOWNLOAD_TIMEOUT_SECONDS)
+    response.raise_for_status()
+
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_bytes(response.content)
+    return dest
 
 
 # --- CSV plumbing ----------------------------------------------------------
