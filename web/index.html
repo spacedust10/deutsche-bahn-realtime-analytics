@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DB Fernverkehr · Realtime Delay Analytics</title>
+<link rel="preconnect" href="https://cdn.jsdelivr.net">
+<link rel="stylesheet" href="/static/styles.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>🚄</text></svg>">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <div class="mark">DB</div>
+    <div class="brandtext">
+      <h1>Fernverkehr Realtime</h1>
+      <p>GTFS-Realtime delay analytics · ICE / IC / EC</p>
+    </div>
+  </div>
+
+  <div class="topmeta">
+    <div class="lineage" id="lineage">
+      <span class="lineage-label">Source</span>
+      <span class="lineage-value" id="source-label">connecting…</span>
+    </div>
+    <div class="clock">
+      <span class="clock-label">Feed time</span>
+      <span class="clock-value" id="feed-clock">--:--:--</span>
+    </div>
+    <div class="status" id="status">
+      <span class="pulse"></span><span id="status-text">connecting</span>
+    </div>
+  </div>
+</header>
+
+<section class="kpis">
+  <article class="kpi kpi-primary">
+    <span class="kpi-label">Punctuality</span>
+    <span class="kpi-value"><span data-counter="punctuality" data-decimals="1">0</span><em>%</em></span>
+    <span class="kpi-sub">stops under 6 min late</span>
+    <div class="kpi-bar"><i id="punct-bar"></i></div>
+  </article>
+  <article class="kpi">
+    <span class="kpi-label">Mean delay</span>
+    <span class="kpi-value"><span data-counter="meandelay" data-decimals="1">0</span><em>min</em></span>
+    <span class="kpi-sub">across all tracked stops</span>
+  </article>
+  <article class="kpi">
+    <span class="kpi-label">Trains tracked</span>
+    <span class="kpi-value"><span data-counter="trips">0</span></span>
+    <span class="kpi-sub">long-distance services live</span>
+  </article>
+  <article class="kpi">
+    <span class="kpi-label">Worst delay</span>
+    <span class="kpi-value"><span data-counter="maxdelay">0</span><em>min</em></span>
+    <span class="kpi-sub">peak across the network</span>
+  </article>
+  <article class="kpi">
+    <span class="kpi-label">Observations</span>
+    <span class="kpi-value"><span data-counter="observations">0</span></span>
+    <span class="kpi-sub">stop-time records stored</span>
+  </article>
+</section>
+
+<main class="grid">
+  <section class="panel panel-wide">
+    <div class="panel-head">
+      <h2>Network delay over time</h2>
+      <p>Mean and 90th-percentile delay per 5-minute bucket, with punctuality</p>
+    </div>
+    <div class="chart chart-tall" id="chart-timeseries"></div>
+  </section>
+
+  <section class="panel">
+    <div class="panel-head">
+      <h2>Live network</h2>
+      <p>Last reported station per train, coloured by delay</p>
+    </div>
+    <div class="chart chart-tall" id="chart-map"></div>
+  </section>
+
+  <section class="panel">
+    <div class="panel-head">
+      <h2>Delay distribution</h2>
+      <p>Where every observed stop lands</p>
+    </div>
+    <div class="chart" id="chart-distribution"></div>
+  </section>
+
+  <section class="panel">
+    <div class="panel-head">
+      <h2>Worst stations</h2>
+      <p>Mean delay, minimum 2 observations</p>
+    </div>
+    <div class="chart" id="chart-stations"></div>
+  </section>
+
+  <section class="panel">
+    <div class="panel-head">
+      <h2>By train category</h2>
+      <p>Punctuality and mean delay per product</p>
+    </div>
+    <div class="chart" id="chart-categories"></div>
+  </section>
+
+  <section class="panel panel-wide">
+    <div class="panel-head">
+      <h2>Delay propagation <span class="hint" id="prop-hint">select a train</span></h2>
+      <p>How one service accumulates delay along its route</p>
+    </div>
+    <div class="chart" id="chart-propagation"></div>
+  </section>
+
+  <section class="panel">
+    <div class="panel-head">
+      <h2>Most delayed services</h2>
+      <p>Click a row to trace its route</p>
+    </div>
+    <div class="tablewrap"><table class="trips"><tbody id="worst-trips"></tbody></table></div>
+  </section>
+</main>
+
+<footer class="footer">
+  <div class="foot-left">
+    <span id="model-info">Delay model: not trained</span>
+  </div>
+  <div class="foot-right">
+    <span id="feed-stats">—</span>
+  </div>
+</footer>
+
+<script src="https://cdn.jsdelivr.net/npm/echarts@5.5.1/dist/echarts.min.js"></script>
+<script src="/static/app.js"></script>
+</body>
+</html>
