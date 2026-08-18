@@ -205,3 +205,38 @@ def test_model_predicts_a_correction_to_the_current_delay(persistent_observation
     row["delay"] = 3000.0
     # A 50-minute delay cannot plausibly be predicted to vanish by the next stop.
     assert model.predict(row)[0] > 2000
+
+
+# --- stability of the reported metric --------------------------------------
+
+def test_metrics_are_cross_validated_not_a_single_split(persistent_observations):
+    """A single random split on ~1.4k pairs swings the reported improvement by
+    several points run to run. Averaging folds gives a number worth quoting."""
+    metrics = DelayModel().train(persistent_observations)
+    assert metrics["cv_folds"] >= 3
+    assert "mae_std_seconds" in metrics
+    assert metrics["mae_std_seconds"] >= 0
+
+
+def test_cross_validated_metrics_are_reproducible(persistent_observations):
+    first = DelayModel().train(persistent_observations)
+    second = DelayModel().train(persistent_observations)
+    assert first["mae_seconds"] == second["mae_seconds"]
+    assert first["improvement_pct"] == second["improvement_pct"]
+
+
+def test_baseline_is_scored_on_the_same_folds_as_the_model(persistent_observations):
+    """Comparing against a baseline measured elsewhere would flatter whichever
+    split happened to be easier."""
+    metrics = DelayModel().train(persistent_observations)
+    assert metrics["baseline_mae_seconds"] > 0
+    expected = 100 * (metrics["baseline_mae_seconds"] - metrics["mae_seconds"]) / metrics["baseline_mae_seconds"]
+    assert metrics["improvement_pct"] == pytest.approx(expected, abs=0.15)
+
+
+def test_the_final_model_is_fitted_on_all_data_after_scoring(persistent_observations):
+    """Cross-validation measures; the shipped model should still see everything."""
+    model = DelayModel()
+    model.train(persistent_observations)
+    assert model.model is not None
+    assert len(model.predict(next_stop_pairs(persistent_observations).head(5))) == 5
