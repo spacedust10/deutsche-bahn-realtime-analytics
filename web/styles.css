@@ -1,0 +1,236 @@
+/* Deutsche Bahn Fernverkehr realtime dashboard.
+   Palette anchors on DB's brand red against a near-black control-room ground,
+   with delay states running red -> amber -> green so the eye reads severity
+   before it reads any number. */
+
+:root {
+  --bg:        #070a0f;
+  --bg-panel:  #0e131c;
+  --bg-raise:  #141b27;
+  --line:      #1e2836;
+  --line-soft: #17202c;
+
+  --text:      #e8eef7;
+  --text-dim:  #8296ae;
+  --text-mute: #56677d;
+
+  --db-red:    #ec0016;
+  --db-red-lo: #ff4b57;
+  --amber:     #ffb020;
+  --green:     #22c98a;
+  --cyan:      #35c8e8;
+  --violet:    #8b7cf6;
+
+  --radius: 14px;
+  --gap: 16px;
+  --shadow: 0 1px 0 rgba(255,255,255,.03) inset, 0 12px 32px rgba(0,0,0,.45);
+  --mono: "SF Mono", "JetBrains Mono", ui-monospace, Menlo, Consolas, monospace;
+  --sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  background:
+    radial-gradient(1100px 620px at 12% -12%, rgba(236,0,22,.10), transparent 60%),
+    radial-gradient(900px 520px at 92% 0%, rgba(53,200,232,.07), transparent 55%),
+    var(--bg);
+  color: var(--text);
+  font-family: var(--sans);
+  min-height: 100vh;
+  padding: 20px 22px 12px;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ---------- top bar ---------- */
+
+.topbar {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 20px; flex-wrap: wrap; margin-bottom: 18px;
+}
+
+.brand { display: flex; align-items: center; gap: 14px; }
+
+.mark {
+  width: 46px; height: 46px; border-radius: 10px;
+  background: linear-gradient(145deg, var(--db-red), #a3000f);
+  display: grid; place-items: center;
+  font: 800 19px/1 var(--sans); letter-spacing: .5px;
+  box-shadow: 0 6px 20px rgba(236,0,22,.38);
+}
+
+.brandtext h1 { font-size: 19px; font-weight: 650; letter-spacing: -.2px; }
+.brandtext p  { font-size: 12.5px; color: var(--text-dim); margin-top: 3px; }
+
+.topmeta { display: flex; align-items: stretch; gap: 10px; flex-wrap: wrap; }
+
+.lineage, .clock, .status {
+  background: var(--bg-panel); border: 1px solid var(--line);
+  border-radius: 10px; padding: 8px 14px;
+  display: flex; flex-direction: column; justify-content: center; gap: 3px;
+}
+
+.lineage-label, .clock-label {
+  font-size: 9.5px; letter-spacing: .13em; text-transform: uppercase; color: var(--text-mute);
+}
+.lineage-value { font-size: 12.5px; font-weight: 550; }
+.lineage.official .lineage-value { color: var(--green); }
+.clock-value { font: 550 14px/1 var(--mono); color: var(--cyan); }
+
+.status { flex-direction: row; align-items: center; gap: 9px; font-size: 12.5px; font-weight: 550; }
+.pulse {
+  width: 8px; height: 8px; border-radius: 50%; background: var(--text-mute);
+  box-shadow: 0 0 0 0 rgba(34,201,138,.6);
+}
+.status.live .pulse { background: var(--green); animation: beat 2s ease-out infinite; }
+.status.live { color: var(--green); }
+.status.down .pulse { background: var(--db-red); }
+.status.down { color: var(--db-red-lo); }
+
+@keyframes beat {
+  0%   { box-shadow: 0 0 0 0 rgba(34,201,138,.55); }
+  70%  { box-shadow: 0 0 0 11px rgba(34,201,138,0); }
+  100% { box-shadow: 0 0 0 0 rgba(34,201,138,0); }
+}
+
+/* ---------- KPI row ---------- */
+
+.kpis {
+  display: grid; grid-template-columns: repeat(5, 1fr);
+  gap: var(--gap); margin-bottom: var(--gap);
+}
+
+.kpi {
+  position: relative; overflow: hidden;
+  background: linear-gradient(180deg, var(--bg-raise), var(--bg-panel));
+  border: 1px solid var(--line); border-radius: var(--radius);
+  padding: 16px 18px 15px; box-shadow: var(--shadow);
+  display: flex; flex-direction: column; gap: 5px;
+  animation: rise .5s cubic-bezier(.2,.7,.3,1) backwards;
+}
+.kpi:nth-child(2) { animation-delay: .05s; }
+.kpi:nth-child(3) { animation-delay: .10s; }
+.kpi:nth-child(4) { animation-delay: .15s; }
+.kpi:nth-child(5) { animation-delay: .20s; }
+
+@keyframes rise { from { opacity: 0; transform: translateY(12px); } }
+
+.kpi::after {
+  content: ""; position: absolute; inset: 0 auto auto 0; height: 2px; width: 100%;
+  background: linear-gradient(90deg, transparent, var(--line), transparent);
+}
+.kpi-primary::after { background: linear-gradient(90deg, var(--db-red), rgba(236,0,22,0)); }
+
+.kpi-label {
+  font-size: 10px; letter-spacing: .13em; text-transform: uppercase; color: var(--text-mute);
+}
+.kpi-value {
+  font: 300 34px/1.05 var(--sans); letter-spacing: -1.2px;
+  font-variant-numeric: tabular-nums; display: flex; align-items: baseline; gap: 4px;
+}
+.kpi-value em { font-size: 15px; font-style: normal; color: var(--text-dim); font-weight: 400; }
+.kpi-primary .kpi-value { color: #fff; }
+.kpi-sub { font-size: 11.5px; color: var(--text-dim); }
+
+.kpi-bar {
+  margin-top: 8px; height: 4px; border-radius: 3px;
+  background: var(--line); overflow: hidden;
+}
+.kpi-bar i {
+  display: block; height: 100%; width: 0%;
+  background: linear-gradient(90deg, var(--db-red), var(--amber) 55%, var(--green));
+  transition: width 1.1s cubic-bezier(.2,.7,.3,1);
+}
+
+/* ---------- panels ---------- */
+
+.grid {
+  display: grid; grid-template-columns: repeat(3, 1fr);
+  gap: var(--gap); margin-bottom: var(--gap);
+}
+
+.panel {
+  background: var(--bg-panel); border: 1px solid var(--line);
+  border-radius: var(--radius); padding: 16px 18px 12px;
+  box-shadow: var(--shadow); min-width: 0;
+  animation: rise .55s cubic-bezier(.2,.7,.3,1) backwards .12s;
+}
+.panel-wide { grid-column: span 2; }
+
+.panel-head { margin-bottom: 6px; }
+.panel-head h2 {
+  font-size: 13.5px; font-weight: 600; letter-spacing: -.1px;
+  display: flex; align-items: center; gap: 8px;
+}
+.panel-head p { font-size: 11.5px; color: var(--text-mute); margin-top: 2px; }
+
+.hint {
+  font-size: 10px; font-weight: 500; letter-spacing: .06em; text-transform: uppercase;
+  color: var(--db-red-lo); background: rgba(236,0,22,.11);
+  border: 1px solid rgba(236,0,22,.26); border-radius: 20px; padding: 2px 9px;
+}
+
+.chart { height: 248px; width: 100%; }
+.chart-tall { height: 330px; }
+
+/* ---------- worst-services table ---------- */
+
+.tablewrap { max-height: 248px; overflow-y: auto; overflow-x: auto; }
+.trips { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.trips tr {
+  border-bottom: 1px solid var(--line-soft); cursor: pointer;
+  transition: background .18s ease;
+}
+.trips tr:hover { background: var(--bg-raise); }
+.trips tr.active { background: rgba(236,0,22,.10); }
+.trips td { padding: 9px 8px; white-space: nowrap; }
+.trips td:first-child { padding-left: 2px; }
+
+.badge {
+  font: 600 10px/1 var(--sans); letter-spacing: .05em;
+  padding: 4px 7px; border-radius: 5px; display: inline-block;
+}
+.badge.ICE { background: rgba(236,0,22,.16);  color: var(--db-red-lo); }
+.badge.IC,
+.badge.EC,
+.badge.ECE { background: rgba(53,200,232,.14); color: var(--cyan); }
+
+.delay-cell { font: 550 13px/1 var(--mono); text-align: right; font-variant-numeric: tabular-nums; }
+.d-ok   { color: var(--green); }
+.d-warn { color: var(--amber); }
+.d-bad  { color: var(--db-red-lo); }
+.route-cell { color: var(--text-dim); }
+
+/* ---------- footer ---------- */
+
+.footer {
+  display: flex; justify-content: space-between; align-items: center;
+  flex-wrap: wrap; gap: 10px;
+  font-size: 11.5px; color: var(--text-mute);
+  border-top: 1px solid var(--line); padding: 12px 2px 4px;
+}
+.footer span { font-family: var(--mono); }
+
+/* ---------- responsive ---------- */
+
+@media (max-width: 1240px) {
+  .kpis { grid-template-columns: repeat(3, 1fr); }
+  .grid { grid-template-columns: repeat(2, 1fr); }
+  .panel-wide { grid-column: span 2; }
+}
+@media (max-width: 780px) {
+  body { padding: 14px; }
+  .kpis, .grid { grid-template-columns: 1fr; }
+  .panel-wide { grid-column: span 1; }
+  .kpi-value { font-size: 28px; }
+}
+
+/* Respect users who ask for less motion. */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; }
+}
+
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--line); border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: #2a3646; }
