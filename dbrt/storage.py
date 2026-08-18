@@ -21,6 +21,7 @@ from psycopg2.extras import execute_values
 SCHEMA_PATH = Path(__file__).resolve().parent.parent / "db" / "schema.sql"
 
 _TABLES = ("stop_time_updates", "feed_polls", "trips", "routes", "stops")
+_PAGE_SIZE = 1000
 
 _INSERT_STU = """
 INSERT INTO stop_time_updates (
@@ -68,9 +69,14 @@ class Warehouse:
             )
             for rec, feed_ts, category in batch
         ]
+        written = 0
         with self.conn.cursor() as cur:
-            execute_values(cur, _INSERT_STU, rows, page_size=1000)
-            return cur.rowcount
+            # execute_values pages internally and leaves cur.rowcount reflecting
+            # only the final page, so pages are driven here and summed instead.
+            for start in range(0, len(rows), _PAGE_SIZE):
+                execute_values(cur, _INSERT_STU, rows[start:start + _PAGE_SIZE], page_size=_PAGE_SIZE)
+                written += cur.rowcount
+        return written
 
     def load_timetable(self, timetable) -> None:
         """Refresh GTFS reference data. Upserts so a daily reload is safe."""
