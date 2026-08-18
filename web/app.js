@@ -345,6 +345,11 @@ function applyPayload(data) {
   setCounter('trips', p.trips);
   setCounter('maxdelay', Math.round(minutes(p.max_delay_seconds)));
   setCounter('observations', data.summary.observations_stored);
+
+  const cancelled = data.cancellations;
+  setCounter('skipped', cancelled.skipped_stops);
+  document.getElementById('skipped-sub').textContent =
+    `${cancelled.skipped_pct}% of calls · ${cancelled.affected_trips} services`;
   document.getElementById('punct-bar').style.width = `${p.punctuality_pct}%`;
 
   const source = data.summary.source;

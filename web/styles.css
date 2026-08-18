@@ -96,7 +96,7 @@ body {
 /* ---------- KPI row ---------- */
 
 .kpis {
-  display: grid; grid-template-columns: repeat(5, 1fr);
+  display: grid; grid-template-columns: repeat(6, 1fr);
   gap: var(--gap); margin-bottom: var(--gap);
 }
 
@@ -112,6 +112,7 @@ body {
 .kpi:nth-child(3) { animation-delay: .10s; }
 .kpi:nth-child(4) { animation-delay: .15s; }
 .kpi:nth-child(5) { animation-delay: .20s; }
+.kpi:nth-child(6) { animation-delay: .25s; }
 
 @keyframes rise { from { opacity: 0; transform: translateY(12px); } }
 
