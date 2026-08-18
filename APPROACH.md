@@ -140,7 +140,7 @@ the stack; these notes record why each specific library, and what was rejected.
 | Decoding | `gtfs-realtime-bindings` | Google's official generated bindings. Hand-writing the `.proto` would mean maintaining a copy of a spec that upstream owns. |
 | Storage | PostgreSQL + `psycopg2` | Named by the architecture. `execute_values` batching turns a ~1,400-row poll from thousands of round trips into one. |
 | Analysis | SQL + `pandas` | Aggregation belongs next to the data; pandas only appears where the ML code needs frames. |
-| ML | `scikit-learn` `HistGradientBoostingRegressor` | Tabular, few thousand rows, mixed numeric/categorical. Deep learning here would be ceremony. |
+| ML | `scikit-learn` `HistGradientBoostingRegressor` | Tabular, few thousand rows, mixed numeric/categorical. Deep learning here would be ceremony. Loss chosen by measurement, not preference — see §5.2c. |
 | API | FastAPI + `uvicorn` | Native WebSocket support and typed query validation — the out-of-range `bucket` rejection is free. |
 | Charts | Apache ECharts 5.5.1, vendored | Built-in animated transitions between data states, which is the entire point of a realtime view. |
 | Frontend | Vanilla JS | ~450 lines. A framework and build step would add more configuration than code. |
@@ -267,14 +267,59 @@ Two changes, both dictated by the measurement:
   Squared error chases the long tail and is dragged off zero.
 
 ```
-before : -56.4 %   (absolute target, squared error)
+before : -56.4 %   (absolute target, squared error, single split)
 after  :  -2.0 %   (delta target, MAE loss, same 30 minutes of data)
-later  :  +4.4 %   (same model, more history collected)
 ```
 
-The fixture was rewritten to reproduce the real distribution — 55% zero deltas —
-so the test now fails the way production did rather than on a tidy synthetic
-curve.
+The fixture was rewritten to reproduce the real distribution, so the test now
+fails the way production did rather than on a tidy synthetic curve.
+
+### 5.2b The reported number was itself unreliable
+
+Retraining as history accumulated gave +4.4%, then +0.3%, then -2.0% on
+comparable sample sizes. That spread is a single random hold-out split on ~1,400
+pairs — noise being reported as signal.
+
+Scoring moved to 5-fold cross-validation, with the baseline measured on the
+identical folds, and the standard deviation across folds reported alongside the
+mean. The shipped model is then refitted on all the data. Current figures:
+
+```
+MAE  112.0 s (± 11.8 across folds)  vs persistence 115.9 s   -> +3.4 %
+RMSE 339.3 s                        vs persistence 340.3 s   -> +0.3 %
+```
+
+### 5.2c A structural ceiling, found while fixing the tests
+
+Making the fixture match reality exposed something the metric alone hides.
+
+When **more than half** of stop-to-stop deltas are exactly zero, the conditional
+median delta *is* zero — so "no change" becomes the MAE-optimal prediction.
+Persistence is then unbeatable on MAE by construction, not by being good. The
+live feed sits at **49.8% zero deltas**, just under the line, which is why a
++3.4% MAE gain is achievable at all and why it is small.
+
+Measured on a fixture pinned to exactly 50%:
+
+```
+MAE  : model 90.6 s vs persistence  87.1 s   ->  -4.0 %   (persistence optimal)
+RMSE : model 119.4 s vs persistence 134.9 s  -> +11.5 %   (model clearly better)
+```
+
+The model does learn real structure — it simply cannot express that as an MAE
+gain against a metric whose optimum is a constant. Both metrics are now
+reported, and the test suite asserts the RMSE improvement, since that is the one
+that reflects learned signal rather than the shape of the loss function.
+
+Choosing the loss was decided by measurement rather than preference. On live
+data, cross-validated:
+
+```
+absolute_error : MAE +3.9 %   RMSE  +0.1 %
+squared_error  : MAE -23.2 %  RMSE  -3.5 %
+```
+
+`absolute_error` wins on both, so it stays.
 
 ### 5.3 The same station ranked twice
 
@@ -425,9 +470,11 @@ that does less.
 - **The default source is the open feed, not DB's own.** The official path is
   implemented and verified as reachable and key-gated, but running it needs
   credentials. The active source is always displayed.
-- **The model's margin is small.** +4.4% over persistence on roughly an hour of
-  history. Real gains need days of data, weather, infrastructure incidents and
-  upstream-train state — none of which is in a GTFS-RT feed.
+- **The model's margin is small, and partly capped by the metric.** +3.4% MAE
+  over persistence (5-fold, ±11.8 s) on roughly an hour of history. With ~50% of
+  deltas exactly zero, MAE improvement is structurally limited; RMSE is the
+  honest place to look. Real gains need days of data, weather, infrastructure
+  incidents and upstream-train state — none of which is in a GTFS-RT feed.
 - **Positions are station-level.** No `VehiclePosition` in this feed, so there is
   no interpolation between stops.
 - **Single-process.** One shared PostgreSQL connection, marked in the code. A

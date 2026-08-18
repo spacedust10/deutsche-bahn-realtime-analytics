@@ -25,7 +25,7 @@ that history and pushes it to the browser over a WebSocket.
 | **Station analysis** | Ranks stations by mean delay, rolling platforms up to their parent station |
 | **Delay propagation** | Traces how one service accumulates delay stop by stop |
 | **Disruptions** | Reports `SKIPPED` station calls and `CANCELED` services separately |
-| **Delay prediction** | Gradient boosting on the delay *delta*, benchmarked against persistence |
+| **Delay prediction** | Gradient boosting on the delay *delta*, cross-validated against a persistence baseline |
 | **Live dashboard** | Animated time series, network map, distribution, rankings, propagation |
 
 ---
@@ -161,7 +161,7 @@ GTFS-RT feed  --HTTPS+ETag-->  FeedClient
 
 ## Tests
 
-Built test-first. 152 tests across unit, database, API and live-feed layers.
+Built test-first. 160 tests across unit, database, API and live-feed layers.
 
 ```bash
 make test
