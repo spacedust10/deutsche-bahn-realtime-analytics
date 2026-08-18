@@ -418,9 +418,12 @@ async function loadStationGeo() {
 async function loadModelInfo() {
   try {
     const info = await (await fetch('/api/model')).json();
+    // The fold spread is shown deliberately: a single-split number on this
+    // sample size moved by several points run to run.
     document.getElementById('model-info').textContent = info.trained
-      ? `Delay model: MAE ${info.mae_seconds}s vs persistence ${info.baseline_mae_seconds}s ` +
-        `(${info.improvement_pct > 0 ? '+' : ''}${info.improvement_pct}%) · ${info.samples} samples`
+      ? `Delay model (${info.cv_folds}-fold): MAE ${info.mae_seconds}±${info.mae_std_seconds}s ` +
+        `vs persistence ${info.baseline_mae_seconds}s (${info.improvement_pct > 0 ? '+' : ''}${info.improvement_pct}%) · ` +
+        `RMSE ${info.rmse_seconds}s vs ${info.baseline_rmse_seconds}s · ${info.samples} samples`
       : 'Delay model: not trained';
   } catch (err) {
     console.warn('model info unavailable', err);
