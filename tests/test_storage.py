@@ -124,3 +124,21 @@ def test_latest_feed_timestamp_reflects_the_newest_observation(warehouse):
     newest = FEED_TS + dt.timedelta(minutes=30)
     write(warehouse, record(seq=1, ts=newest))
     assert warehouse.latest_feed_timestamp() == newest
+
+
+def test_insert_count_is_correct_across_multiple_execute_values_pages(warehouse):
+    """Regression: execute_values paginates, and cur.rowcount only reports the
+    final page. A real poll writes ~1300 rows, so the audited count silently
+    lost everything before the last page."""
+    batch = [record(seq=i) for i in range(1200)]
+    written = write(warehouse, *batch)
+
+    assert warehouse.count("stop_time_updates") == 1200
+    assert written == 1200
+
+
+def test_insert_count_excludes_rows_skipped_by_conflict(warehouse):
+    batch = [record(seq=i) for i in range(1200)]
+    write(warehouse, *batch)
+    rewritten = write(warehouse, *batch)
+    assert rewritten == 0
