@@ -239,6 +239,7 @@ def _dashboard_payload(warehouse: Warehouse, settings: Settings) -> dict:
         "network": analytics.network_snapshot(warehouse, limit=400),
         "positions": analytics.live_positions(warehouse, limit=600),
         "history_window": analytics.history_window(warehouse),
+        "polls": analytics.recent_polls(warehouse, limit=60),
         "cancellations": analytics.cancellations(warehouse),
         "skipped_stations": analytics.skipped_stations(warehouse, limit=8),
         "worst_trips": analytics.worst_trips(warehouse, limit=8),

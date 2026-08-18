@@ -513,3 +513,25 @@ def station_points(warehouse, min_calls: int = 1) -> dict[str, Any]:
             for r in rows
         ],
     }
+
+
+def recent_polls(warehouse, limit: int = 60) -> list[dict]:
+    """Recent ingestion attempts, oldest first, for the feed-health chart."""
+    rows = warehouse.fetchall(
+        """SELECT fetched_at, rows_written, duration_ms, payload_bytes, entity_count, error
+           FROM   feed_polls
+           ORDER  BY id DESC
+           LIMIT  %s""",
+        (limit,),
+    )
+    return [
+        {
+            "fetched_at": r[0].isoformat(),
+            "rows_written": r[1] or 0,
+            "duration_ms": r[2] or 0,
+            "payload_bytes": r[3] or 0,
+            "entity_count": r[4] or 0,
+            "error": r[5],
+        }
+        for r in reversed(rows)   # newest-first from SQL, oldest-first for plotting
+    ]

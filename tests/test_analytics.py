@@ -229,3 +229,17 @@ def test_station_delays_keep_the_parent_station_coordinates(warehouse):
 
     row = analytics.station_delays(warehouse, min_observations=1)[0]
     assert row["stop_lat"] == pytest.approx(51.536)
+
+
+def test_recent_polls_returns_ingestion_history_newest_last(warehouse):
+    """The ingestion panel plots time forward, so rows arrive oldest first."""
+    for rows_written in (10, 20, 30):
+        warehouse.record_poll(source_url="u", http_status=200, rows_written=rows_written, duration_ms=rows_written)
+    polls = analytics.recent_polls(warehouse, limit=10)
+
+    assert [p["rows_written"] for p in polls] == [10, 20, 30]
+    assert all("fetched_at" in p and "duration_ms" in p for p in polls)
+
+
+def test_recent_polls_is_empty_on_a_fresh_warehouse(warehouse):
+    assert analytics.recent_polls(warehouse) == []
