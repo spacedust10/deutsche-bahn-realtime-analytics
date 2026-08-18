@@ -157,3 +157,49 @@ def test_a_later_train_is_predicted_later_than_a_punctual_one(observations):
     punctual = pairs.head(1).copy(); punctual["delay"] = 0
     very_late = pairs.head(1).copy(); very_late["delay"] = 1800
     assert model.predict(very_late)[0] > model.predict(punctual)[0]
+
+
+@pytest.fixture()
+def persistent_observations():
+    """Realistic railway behaviour: delay mostly carries over, drifting slightly.
+
+    This is the case the first model lost on. Predicting the absolute next
+    delay makes the learner re-derive the (large) current delay from scratch,
+    while the baseline gets it for free.
+
+    Measured on the live feed: 55% of stop-to-stop deltas are exactly 0, the
+    median delta is 0, and delay carries a standard deviation near 780s. This
+    fixture reproduces that shape so the tests fail the way production did.
+    """
+    rng = np.random.default_rng(7)
+    base = dt.datetime(2026, 8, 18, 7, 0, tzinfo=dt.timezone.utc)
+    rows = []
+    for trip in range(150):
+        delay = float(rng.integers(-120, 2400))
+        for seq in range(8):
+            rows.append([f"T{trip}", dt.date(2026, 8, 18), seq, delay, "ICE" if trip % 2 else "IC",
+                         base + dt.timedelta(minutes=seq * 3)])
+            if rng.random() < 0.55:
+                continue  # Delay unchanged, as it is for most real stop pairs.
+            delay = delay + 0.05 * delay + rng.normal(0, 60)
+    return frame(rows)
+
+
+def test_model_beats_persistence_on_realistically_persistent_delays(persistent_observations):
+    metrics = DelayModel().train(persistent_observations)
+    assert metrics["mae_seconds"] < metrics["baseline_mae_seconds"], (
+        f"model MAE {metrics['mae_seconds']}s must beat persistence "
+        f"{metrics['baseline_mae_seconds']}s"
+    )
+
+
+def test_model_predicts_a_correction_to_the_current_delay(persistent_observations):
+    """Predicting the delta keeps the large, already-known current delay out of
+    the learning target."""
+    model = DelayModel()
+    model.train(persistent_observations)
+    pairs = next_stop_pairs(persistent_observations)
+    row = pairs.head(1).copy()
+    row["delay"] = 3000.0
+    # A 50-minute delay cannot plausibly be predicted to vanish by the next stop.
+    assert model.predict(row)[0] > 2000
