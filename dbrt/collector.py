@@ -82,3 +82,33 @@ def collect_once(client, timetable, warehouse) -> PollSummary:
         error=summary.error,
     )
     return summary
+
+
+def run_forever(settings, timetable, warehouse, client=None, iterations: Optional[int] = None) -> None:
+    """Poll on a fixed interval until interrupted (or `iterations` polls elapse).
+
+    Sleeps for the remainder of the interval rather than a flat interval, so a
+    slow poll does not compound into drift.
+    """
+    from .feed_client import FeedClient
+
+    client = client or FeedClient(settings)
+    completed = 0
+
+    while iterations is None or completed < iterations:
+        summary = collect_once(client, timetable, warehouse)
+        if summary.error:
+            log.warning("poll error: %s", summary.error)
+        elif summary.not_modified:
+            log.info("feed unchanged (304)")
+        else:
+            log.info(
+                "feed %s | %d long-distance trips | %d rows | %d ms",
+                summary.feed_timestamp, summary.long_distance_trips,
+                summary.rows_written, summary.duration_ms,
+            )
+
+        completed += 1
+        if iterations is not None and completed >= iterations:
+            break
+        time.sleep(max(0.0, settings.poll_interval_seconds - summary.duration_ms / 1000))
