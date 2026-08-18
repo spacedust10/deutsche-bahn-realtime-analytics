@@ -196,3 +196,36 @@ def test_skipped_stations_rank_the_most_frequently_dropped_stops(warehouse):
     rows = analytics.skipped_stations(warehouse, limit=5)
     assert rows[0]["stop_name"] == "Berlin Hbf"
     assert rows[0]["skipped"] == 2
+
+
+# --- station aggregation ---------------------------------------------------
+
+def test_station_delays_aggregate_platforms_into_one_station(warehouse):
+    """GTFS models each platform as its own stop_id under a parent station.
+    Ranking platforms separately shows the same city twice with different
+    numbers, which reads as a bug and hides the station's real total."""
+    with warehouse.conn.cursor() as cur:
+        cur.execute("INSERT INTO stops (stop_id, stop_name, stop_lat, stop_lon, parent_station) VALUES "
+                    "('P',  'Göttingen', 51.536, 9.926, NULL),"
+                    "('P1', 'Göttingen', 51.536, 9.926, 'P'),"
+                    "('P2', 'Göttingen', 51.536, 9.926, 'P')")
+    warehouse.insert_stop_time_updates([
+        rec("A", 0, 600, "P1"), rec("B", 0, 1200, "P2"), rec("C", 0, 300, "P"),
+    ])
+
+    rows = analytics.station_delays(warehouse, min_observations=1)
+
+    assert len(rows) == 1, f"expected one Göttingen, got {[r['stop_name'] for r in rows]}"
+    assert rows[0]["stop_name"] == "Göttingen"
+    assert rows[0]["observations"] == 3
+    assert rows[0]["mean_delay_seconds"] == 700.0
+
+
+def test_station_delays_keep_the_parent_station_coordinates(warehouse):
+    with warehouse.conn.cursor() as cur:
+        cur.execute("INSERT INTO stops (stop_id, stop_name, stop_lat, stop_lon, parent_station) VALUES "
+                    "('P','Göttingen',51.536,9.926,NULL),('P1','Göttingen',51.536,9.926,'P')")
+    warehouse.insert_stop_time_updates([rec("A", 0, 600, "P1")])
+
+    row = analytics.station_delays(warehouse, min_observations=1)[0]
+    assert row["stop_lat"] == pytest.approx(51.536)
