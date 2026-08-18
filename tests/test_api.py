@@ -130,3 +130,20 @@ def test_websocket_payload_carries_a_server_timestamp(client):
     with client.websocket_connect("/ws") as ws:
         payload = ws.receive_json()
     assert dt.datetime.fromisoformat(payload["generated_at"])
+
+
+def test_station_geometry_endpoint_returns_coordinates_for_the_map_backdrop(client):
+    rows = client.get("/api/stations/geo").json()
+    assert len(rows) == 3
+    assert {"stop_lat", "stop_lon", "stop_name"} <= set(rows[0])
+    assert all(r["stop_lat"] is not None for r in rows)
+
+
+def test_station_geometry_excludes_stops_without_coordinates(warehouse, pg_settings):
+    with warehouse.conn.cursor() as cur:
+        cur.execute("INSERT INTO stops (stop_id, stop_name) VALUES ('X','No Coords')")
+        cur.execute("INSERT INTO stops (stop_id, stop_name, stop_lat, stop_lon) "
+                    "VALUES ('Y','Located',52.5,13.4)")
+    with TestClient(create_app(pg_settings)) as c:
+        names = [r["stop_name"] for r in c.get("/api/stations/geo").json()]
+    assert names == ["Located"]
