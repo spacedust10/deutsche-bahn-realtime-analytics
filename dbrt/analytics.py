@@ -53,10 +53,14 @@ def station_delays(warehouse, limit: int = 15, min_observations: int = 5, hours:
     `min_observations` exists because ranking a station on one observation
     produces noise: a single very late train would top the chart.
     """
+    # GTFS models every platform as its own stop_id under a parent station, so
+    # observations are rolled up to the parent before ranking. Without this a
+    # single city appears several times with a slice of its traffic each.
     rows = warehouse.fetchall(
         f"""
         SELECT COALESCE(s.stop_name, d.stop_id) AS stop_name,
-               d.stop_id, s.stop_lat, s.stop_lon,
+               COALESCE(s.parent_station, d.stop_id) AS station_id,
+               max(s.stop_lat) AS stop_lat, max(s.stop_lon) AS stop_lon,
                count(*) AS observations,
                avg({_DELAY})::float AS mean_delay,
                max({_DELAY}) AS max_delay,
@@ -65,7 +69,7 @@ def station_delays(warehouse, limit: int = 15, min_observations: int = 5, hours:
         LEFT   JOIN stops s ON s.stop_id = d.stop_id
         WHERE  {_DELAY} IS NOT NULL
           AND  d.feed_timestamp > now() - make_interval(hours => %s)
-        GROUP  BY 1, 2, 3, 4
+        GROUP  BY 1, 2
         HAVING count(*) >= %s
         ORDER  BY mean_delay DESC
         LIMIT  %s
