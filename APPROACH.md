@@ -502,6 +502,31 @@ that does less.
 
 ---
 
+## 9b. Reproducing this
+
+```bash
+git clone https://github.com/spacedust10/deutsche-bahn-realtime-analytics
+cd deutsche-bahn-realtime-analytics
+pip install -r requirements.txt
+```
+
+The 94 tests that need neither PostgreSQL nor the network pass on a clean clone
+with no configuration:
+
+```bash
+python3 -m pytest -m "not postgres and not network"
+```
+
+For the full pipeline, bring up PostgreSQL (`docker compose up -d`), then
+`make db && make collect` in one shell and `make serve` in another. The
+dashboard is at `http://127.0.0.1:8000` and starts showing live ICE/IC/EC
+delays within one poll cycle. `make train` once some history exists.
+
+No credentials are required for any of it; setting `DB_API_KEY` switches the
+collector to Deutsche Bahn's own feed.
+
+---
+
 ## 10. References
 
 ### Data sources
