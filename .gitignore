@@ -19,6 +19,9 @@ data/
 *.proto.bin
 models/*.joblib
 
+# ...but committed test fixtures are real captured upstream bytes, keep them.
+!tests/fixtures/**
+
 # OS / editor
 .DS_Store
 .idea/
