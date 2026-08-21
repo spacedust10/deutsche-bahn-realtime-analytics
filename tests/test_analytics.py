@@ -243,3 +243,49 @@ def test_recent_polls_returns_ingestion_history_newest_last(warehouse):
 
 def test_recent_polls_is_empty_on_a_fresh_warehouse(warehouse):
     assert analytics.recent_polls(warehouse) == []
+
+
+# --- propagation across service dates --------------------------------------
+
+def _seed_two_runs(warehouse):
+    """The same trip on two dates: yesterday badly delayed, today on time."""
+    warehouse.execute("INSERT INTO routes (route_id, route_short_name, route_category) VALUES ('r9','ICE 50','ICE')")
+    warehouse.execute("INSERT INTO trips (trip_id, route_id, service_id) VALUES ('t9','r9','s9')")
+    warehouse.execute(
+        "INSERT INTO stops (stop_id, stop_name, stop_lat, stop_lon) VALUES "
+        "('S0','Alpha',50.0,8.0), ('S1','Beta',50.5,9.0), ('S2','Gamma',51.0,10.0)"
+    )
+    base = dt.datetime(2026, 8, 21, 6, 0, tzinfo=dt.timezone.utc)
+    for day, delay in ((dt.date(2026, 8, 20), 14400), (dt.date(2026, 8, 21), 60)):
+        for seq, stop in enumerate(("S0", "S1", "S2")):
+            warehouse.execute(
+                """INSERT INTO stop_time_updates
+                   (trip_id, service_date, stop_sequence, feed_timestamp, stop_id,
+                    arrival_delay, departure_delay, schedule_relationship, route_category)
+                   VALUES ('t9', %s, %s, %s, %s, %s, %s, 'SCHEDULED', 'ICE')""",
+                (day, seq, base + dt.timedelta(minutes=seq), stop, delay, delay),
+            )
+
+
+def test_propagation_traces_one_run_not_every_date_interleaved(warehouse):
+    """Ordering by stop_sequence alone merges two runs of the same train into a
+    sawtooth: seq 0 yesterday, seq 0 today, seq 1 yesterday..."""
+    _seed_two_runs(warehouse)
+
+    rows = analytics.delay_propagation(warehouse, "t9")
+
+    assert [r["stop_sequence"] for r in rows] == [0, 1, 2]
+    assert {r["arrival_delay"] for r in rows} == {60}, "should trace the latest run only"
+
+
+def test_propagation_honours_an_explicit_service_date(warehouse):
+    _seed_two_runs(warehouse)
+
+    rows = analytics.delay_propagation(warehouse, "t9", service_date=dt.date(2026, 8, 20))
+
+    assert [r["stop_sequence"] for r in rows] == [0, 1, 2]
+    assert {r["arrival_delay"] for r in rows} == {14400}
+
+
+def test_propagation_of_an_unknown_trip_is_empty(warehouse):
+    assert analytics.delay_propagation(warehouse, "no-such-trip") == []
