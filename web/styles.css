@@ -57,6 +57,7 @@
 
   /* Product motion: 150-250ms, ease-out. Conveys state, never decorates. */
   --ease: cubic-bezier(0.22, 1, 0.36, 1);
+  --press: 110ms;   /* press feedback wants to be felt, not watched */
   --fast: 160ms;
   --med:  240ms;
 
@@ -90,12 +91,14 @@ h1, h2, h3 { text-wrap: balance; font-weight: 600; letter-spacing: -0.01em; }
 }
 
 .skip-link {
-  position: absolute; left: 8px; top: -48px; z-index: var(--z-sticky);
+  position: absolute; left: 8px; top: 8px; z-index: var(--z-sticky);
   background: var(--raise); color: var(--ink);
   padding: 10px 16px; border-radius: 8px; text-decoration: none;
-  transition: top var(--fast) var(--ease);
+  /* translate, not `top`: layout properties cannot reach the GPU. */
+  transform: translateY(-200%);
+  transition: transform var(--fast) var(--ease);
 }
-.skip-link:focus { top: 8px; }
+.skip-link:focus { transform: translateY(0); }
 
 /* ---------- header ---------- */
 
@@ -136,15 +139,23 @@ h1, h2, h3 { text-wrap: balance; font-weight: 600; letter-spacing: -0.01em; }
 
 .status { flex-direction: row; align-items: center; gap: 8px; }
 .pulse {
-  width: 7px; height: 7px; border-radius: 50%; background: var(--ink-muted); flex: none;
+  width: 7px; height: 7px; border-radius: 50%; background: var(--ink-muted);
+  flex: none; position: relative;
 }
-.status.live .pulse { background: var(--ok); animation: pulse 2s var(--ease) infinite; }
+.status.live .pulse { background: var(--ok); }
+/* This runs forever on an always-visible element, so it stays on transform and
+   opacity only. The previous version animated box-shadow spread, which repaints
+   every frame for the life of the page. */
+.status.live .pulse::after {
+  content: ''; position: absolute; inset: 0; border-radius: 50%;
+  background: var(--ok); animation: pulse-ring 2.4s var(--ease) infinite;
+}
 .status.stale .pulse { background: var(--warn); }
 .status.down .pulse { background: var(--bad); }
 
-@keyframes pulse {
-  0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--ok) 60%, transparent); }
-  70%      { box-shadow: 0 0 0 6px transparent; }
+@keyframes pulse-ring {
+  0%        { transform: scale(1); opacity: 0.5; }
+  70%, 100% { transform: scale(2.8); opacity: 0; }
 }
 
 /* ---------- metric strip ---------- */
@@ -289,10 +300,13 @@ main { padding: 18px 24px 28px; display: flex; flex-direction: column; gap: 18px
   border: 1px solid var(--line-solid); border-radius: 8px;
   padding: 7px 13px; font: 550 12px var(--sans); cursor: pointer;
   display: flex; align-items: center; gap: 6px;
-  transition: background var(--fast) var(--ease), border-color var(--fast) var(--ease);
+  transition: background var(--fast) var(--ease),
+              border-color var(--fast) var(--ease),
+              transform var(--press) var(--ease);
 }
-.tb-btn:hover:not(:disabled) { background: var(--line-solid); }
-.tb-btn:active:not(:disabled) { transform: translateY(1px); }
+/* Scale, not a 1px nudge: the press has to be felt, and transform must be in
+   the transition above or the release snaps back. */
+.tb-btn:active:not(:disabled) { transform: scale(0.97); }
 .tb-btn:disabled { opacity: 0.45; cursor: not-allowed; }
 .tb-btn.is-live { border-color: var(--ok); color: var(--ok); }
 .tb-btn svg { display: block; }
@@ -312,7 +326,7 @@ main { padding: 18px 24px 28px; display: flex; flex-direction: column; gap: 18px
   box-shadow: 0 0 0 1px var(--line-solid);
   transition: transform var(--fast) var(--ease);
 }
-.tb-track input[type="range"]:hover::-webkit-slider-thumb { transform: scale(1.15); }
+
 .tb-track input[type="range"]::-moz-range-thumb {
   width: 15px; height: 15px; border-radius: 50%; border: 3px solid var(--panel);
   background: var(--ink); box-shadow: 0 0 0 1px var(--line-solid);
@@ -334,8 +348,13 @@ thead th {
   border-bottom: 1px solid var(--line-solid); white-space: nowrap;
 }
 tbody td { padding: 8px 10px 8px 0; border-bottom: 1px solid var(--line); }
-tbody tr { cursor: pointer; transition: background var(--fast) var(--ease); }
-tbody tr:hover, tbody tr:focus-visible { background: var(--raise); }
+tbody tr {
+  cursor: pointer;
+  transition: background var(--fast) var(--ease), transform var(--press) var(--ease);
+}
+tbody tr:focus-visible { background: var(--raise); }
+/* Rows carry role="button"; a control that ignores a press reads as broken. */
+tbody tr:active { transform: scale(0.995); background: var(--raise); }
 tbody tr[aria-selected="true"] { background: var(--raise); box-shadow: inset 2px 0 0 var(--c-ice); }
 .tag {
   display: inline-block; padding: 1px 7px; border-radius: 4px;
@@ -353,14 +372,6 @@ tbody tr[aria-selected="true"] { background: var(--raise); box-shadow: inset 2px
 .empty strong { font-size: 13px; font-weight: 550; }
 .empty span { font-size: 11.5px; color: var(--ink-2); max-width: 40ch; }
 
-.skeleton {
-  height: 100%; min-height: 150px; border-radius: 8px;
-  background: linear-gradient(100deg, var(--raise) 30%, var(--line-solid) 50%, var(--raise) 70%);
-  background-size: 220% 100%;
-  animation: shimmer 1.4s linear infinite;
-}
-@keyframes shimmer { to { background-position: -220% 0; } }
-
 /* ---------- footer ---------- */
 
 .footer {
@@ -369,7 +380,51 @@ tbody tr[aria-selected="true"] { background: var(--raise); box-shadow: inset 2px
   font-size: 11.5px; color: var(--ink-2); margin-top: 4px;
 }
 .footer a { color: var(--ink-2); }
-.footer a:hover { color: var(--ink); }
+
+
+/* Touch fires :hover on tap and leaves it stuck, so every hover state is gated
+   behind a pointer that can actually hover. */
+@media (hover: hover) and (pointer: fine) {
+  .tb-btn:hover:not(:disabled) { background: var(--line-solid); }
+  tbody tr:hover { background: var(--raise); }
+  .footer a:hover { color: var(--ink); }
+  .tb-track input[type="range"]:hover::-webkit-slider-thumb { transform: scale(1.15); }
+}
+
+/* ---------- map popup ---------- */
+
+/* Origin-aware: the popup scales out of the train it describes, not its own
+   middle. MapLibre stamps the anchor on the parent, so each maps to its side. */
+.train-popup .maplibregl-popup-content {
+  background: var(--panel);
+  border: 1px solid var(--line-solid);
+  border-radius: 10px;
+  padding: 9px 12px;
+  box-shadow: 0 8px 24px rgb(0 0 0 / 0.45);
+  animation: popup-in var(--fast) var(--ease);
+}
+.maplibregl-popup-anchor-bottom .maplibregl-popup-content       { transform-origin: bottom center; }
+.maplibregl-popup-anchor-top .maplibregl-popup-content          { transform-origin: top center; }
+.maplibregl-popup-anchor-left .maplibregl-popup-content         { transform-origin: left center; }
+.maplibregl-popup-anchor-right .maplibregl-popup-content        { transform-origin: right center; }
+.maplibregl-popup-anchor-bottom-left .maplibregl-popup-content  { transform-origin: bottom left; }
+.maplibregl-popup-anchor-bottom-right .maplibregl-popup-content { transform-origin: bottom right; }
+.maplibregl-popup-anchor-top-left .maplibregl-popup-content     { transform-origin: top left; }
+.maplibregl-popup-anchor-top-right .maplibregl-popup-content    { transform-origin: top right; }
+
+.maplibregl-popup-anchor-bottom .maplibregl-popup-tip { border-top-color: var(--line-solid); }
+.maplibregl-popup-anchor-top .maplibregl-popup-tip    { border-bottom-color: var(--line-solid); }
+.maplibregl-popup-anchor-left .maplibregl-popup-tip   { border-right-color: var(--line-solid); }
+.maplibregl-popup-anchor-right .maplibregl-popup-tip  { border-left-color: var(--line-solid); }
+
+/* Never from scale(0): nothing in the world appears out of nothing. */
+@keyframes popup-in {
+  from { opacity: 0; transform: scale(0.96); }
+}
+
+.popup-title { font: 600 12.5px/1.3 var(--sans); color: var(--ink); }
+.popup-route { font: 400 11.5px/1.3 var(--sans); color: var(--ink-2); margin-top: 2px; }
+.popup-delay { font: 600 11.5px/1.3 var(--mono); margin-top: 4px; }
 
 /* ---------- responsive ---------- */
 
@@ -388,12 +443,13 @@ tbody tr[aria-selected="true"] { background: var(--raise); box-shadow: inset 2px
   .timebar { gap: 10px; }
 }
 
-/* Reduced motion: keep state changes legible, drop the movement. */
+/* Reduced motion means fewer and gentler animations, not none. Colour and
+   opacity carry meaning here (severity, live/stale, selection) and never caused
+   motion sickness, so they stay; everything positional goes. */
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
-    animation-duration: 0.01ms !important;
-    animation-iteration-count: 1 !important;
-    transition-duration: 0.01ms !important;
+    animation: none !important;
+    transition-property: opacity, background-color, border-color, color, fill, stroke !important;
+    transition-duration: 140ms !important;
   }
-  .skeleton { background: var(--raise); }
 }

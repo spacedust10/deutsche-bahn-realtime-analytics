@@ -114,3 +114,44 @@ def test_history_window_reports_the_span_available_for_the_time_slider(warehouse
 def test_empty_warehouse_yields_no_positions_and_a_null_window(warehouse):
     assert analytics.live_positions(warehouse, at=dt.datetime.now(tz=dt.timezone.utc)) == []
     assert analytics.history_window(warehouse)["start"] is None
+
+
+# --- staleness -------------------------------------------------------------
+
+def test_a_train_that_finished_hours_ago_is_not_still_on_the_map(warehouse):
+    """Without a lower bound every trip ever observed stays parked at its
+    terminus, so the map fills with services that ended days ago."""
+    _seed(warehouse)
+    long_after = dt.datetime(2026, 8, 18, 20, 0, tzinfo=dt.timezone.utc)  # ~11h past arrival
+
+    assert analytics.live_positions(warehouse, at=long_after) == []
+
+
+def test_a_train_that_has_just_arrived_is_still_shown(warehouse):
+    """Dropping arrivals the instant they land would make trains vanish at the
+    terminus mid-journey for anyone watching."""
+    _seed(warehouse)
+    just_after = dt.datetime(2026, 8, 18, 9, 5, tzinfo=dt.timezone.utc)  # 5 min past arrival
+
+    positions = analytics.live_positions(warehouse, at=just_after)
+
+    assert len(positions) == 1
+    assert positions[0]["status"] == "arrived"
+
+
+def test_observations_older_than_the_service_window_are_ignored(warehouse):
+    """A stale observation must not resurrect a trip into the live view."""
+    _seed(warehouse)
+    days_later = dt.datetime(2026, 8, 21, 8, 30, tzinfo=dt.timezone.utc)
+
+    assert analytics.live_positions(warehouse, at=days_later) == []
+
+
+def test_a_running_train_is_unaffected_by_the_staleness_filter(warehouse):
+    _seed(warehouse)
+    midway = dt.datetime(2026, 8, 18, 8, 30, tzinfo=dt.timezone.utc)
+
+    positions = analytics.live_positions(warehouse, at=midway)
+
+    assert len(positions) == 1
+    assert positions[0]["status"] == "running"

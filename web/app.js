@@ -14,6 +14,7 @@
 
 const PUSH_MS = 10_000;          // Matches the server's WebSocket heartbeat.
 const REDUCED = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+const CATCHUP_PER_FRAME = 0.08;  // fraction of remaining distance closed per 60Hz frame
 
 /* Mirrors :root in styles.css. Two mirrored palettes is a real cost, so keep
    them in sync: severity is monotone in lightness by construction. */
@@ -78,6 +79,18 @@ function chart(id) {
   charts.set(id, instance);
   return instance;
 }
+
+/* ECharts applies `animationDuration` to the FIRST render only; every later
+   setOption uses the *Update variants. Configuring one and not the other meant
+   the animation users actually see (a refresh every 10s) ran on library
+   defaults. Both are set, and both stay under the 300ms UI ceiling. */
+const MOTION = {
+  animation: !REDUCED,
+  animationDuration: 260,
+  animationEasing: 'quinticOut',
+  animationDurationUpdate: 220,
+  animationEasingUpdate: 'quinticOut',
+};
 
 const AXIS_LABEL = { color: C.muted, fontSize: 10.5 };
 const SPLIT_LINE = { lineStyle: { color: C.line, width: 1 } };   // hairline, never dashed
@@ -145,7 +158,7 @@ function setCounter(key, value, decimals = 0) {
 
   const start = performance.now();
   const step = (now) => {
-    const t = Math.min(1, (now - start) / 500);
+    const t = Math.min(1, (now - start) / 260);
     const eased = 1 - Math.pow(1 - t, 3);
     el.textContent = (from + (value - from) * eased).toFixed(decimals);
     if (t < 1) requestAnimationFrame(step);
@@ -158,7 +171,7 @@ function sparkline(id, values, color) {
   const instance = chart(id);
   if (!instance) return;
   instance.setOption({
-    animation: !REDUCED,
+    ...MOTION,
     grid: { left: 0, right: 0, top: 2, bottom: 2 },
     xAxis: { type: 'category', show: false },
     yAxis: { type: 'value', show: true, min: 'dataMin', max: 'dataMax', axisLabel: { show: false }, splitLine: { show: false }, axisLine: { show: false }, axisTick: { show: false } },
@@ -187,7 +200,7 @@ function renderTimeseries(rows) {
   const p90 = rows.map((r) => [r.bucket, minutes(r.p90_delay_seconds)]);
 
   instance.setOption({
-    animation: !REDUCED, animationDuration: 400, animationEasing: 'quarticOut',
+    ...MOTION,
     tooltip: baseTooltip({ valueFormatter: (v) => `${fmt(v)} min` }),
     legend: {
       data: ['Mean delay', '90th percentile'], top: 0, right: 0,
@@ -231,7 +244,7 @@ function renderPunctuality(rows) {
   const data = rows.map((r) => [r.bucket, r.punctuality_pct]);
 
   instance.setOption({
-    animation: !REDUCED, animationDuration: 400, animationEasing: 'quarticOut',
+    ...MOTION,
     tooltip: baseTooltip({ valueFormatter: (v) => `${fmt(v)}%` }),
     grid: baseGrid(),
     xAxis: timeAxis(),
@@ -281,7 +294,7 @@ function renderDistribution(rows) {
   const total = ordered.reduce((sum, r) => sum + r.stops, 0) || 1;
 
   instance.setOption({
-    animation: !REDUCED, animationDuration: 400,
+    ...MOTION,
     tooltip: baseTooltip({ trigger: 'item', formatter: (p) => `${p.name}<br/><b>${p.value.toLocaleString()}</b> calls (${fmt((p.value / total) * 100)}%)` }),
     grid: baseGrid({ left: 8, bottom: 34 }),
     xAxis: {
@@ -315,7 +328,7 @@ function renderStations(rows) {
   const ordered = [...rows].sort((a, b) => a.mean_delay_seconds - b.mean_delay_seconds).slice(-12);
 
   instance.setOption({
-    animation: !REDUCED, animationDuration: 400,
+    ...MOTION,
     tooltip: baseTooltip({ trigger: 'item', formatter: (p) => `${p.name}<br/><b>${fmt(p.value)} min</b> mean delay` }),
     grid: baseGrid({ left: 8, right: 34 }),
     xAxis: valueAxis('min'),
@@ -348,7 +361,7 @@ function renderCategories(rows) {
   if (!instance) return;
 
   instance.setOption({
-    animation: !REDUCED, animationDuration: 400,
+    ...MOTION,
     tooltip: baseTooltip({ trigger: 'item', formatter: (p) => `${p.name}<br/><b>${fmt(p.value)} min</b> mean delay` }),
     grid: baseGrid({ left: 8 }),
     xAxis: { type: 'category', data: rows.map((r) => r.route_category), axisLabel: { ...AXIS_LABEL, fontSize: 12, fontWeight: 600 }, axisLine: { lineStyle: { color: C.line } }, axisTick: { show: false } },
@@ -382,7 +395,7 @@ function renderPropagation(rows, label) {
   if (!instance) return;
 
   instance.setOption({
-    animation: !REDUCED, animationDuration: 500,
+    ...MOTION,
     tooltip: baseTooltip({ valueFormatter: (v) => `${fmt(v)} min` }),
     grid: baseGrid({ bottom: 52 }),
     xAxis: {
@@ -420,7 +433,7 @@ function renderWorstTrips(rows) {
   }
   body.innerHTML = rows.map((r) => {
     const colour = severityColor(r.max_delay_seconds);
-    return `<tr tabindex="0" role="button" data-trip="${r.trip_id}" data-label="${r.route_name || r.trip_id}"
+    return `<tr tabindex="0" role="button" data-trip="${r.trip_id}" data-label="${r.route_name || r.trip_id}" data-date="${r.service_date || ''}"
                 aria-label="Trace ${r.route_name || r.trip_id}">
       <td>${r.route_name || r.trip_id}</td>
       <td><span class="tag" style="color:${categoryColor(r.route_category)}">${r.route_category || '—'}</span></td>
@@ -454,7 +467,7 @@ function renderImportance(model) {
   const rows = [...model.feature_importance].sort((a, b) => a.importance - b.importance);
 
   instance.setOption({
-    animation: !REDUCED, animationDuration: 400,
+    ...MOTION,
     tooltip: baseTooltip({ trigger: 'item', formatter: (p) => `${p.name}<br/><b>${fmt(p.value * 100)}%</b> of model gain` }),
     grid: baseGrid({ left: 8, right: 40 }),
     xAxis: valueAxis('share', { axisLabel: { ...AXIS_LABEL, formatter: (v) => `${Math.round(v * 100)}%` } }),
@@ -486,7 +499,7 @@ function renderIngestion(polls) {
   if (!instance) return;
 
   instance.setOption({
-    animation: !REDUCED, animationDuration: 400,
+    ...MOTION,
     tooltip: baseTooltip(),
     legend: { data: ['Rows written', 'Fetch duration'], top: 0, right: 0, textStyle: { color: C.ink2, fontSize: 11 }, itemWidth: 14, itemHeight: 2, icon: 'rect' },
     grid: baseGrid({ top: 34 }),
@@ -660,16 +673,27 @@ const TrainMap = {
   },
 
   /* Lerp displayed positions toward their targets across the push interval, so
-     trains glide instead of jumping every ten seconds. */
+     trains glide instead of jumping every ten seconds.
+
+     The rate is normalised against elapsed time rather than applied per frame.
+     A fixed per-frame factor converges twice as fast on a 120Hz display as on
+     60Hz, so the same data animated at different speeds per machine. */
   tick() {
     if (REDUCED) return;
-    const step = () => {
-      const t = Math.min(1, (performance.now() - this.lastUpdate) / PUSH_MS);
+    let last = performance.now();
+
+    const step = (now) => {
+      const dt = Math.min(now - last, 100);   // clamp: a backgrounded tab returns a huge dt
+      last = now;
+      const settle = Math.min(1, (now - this.lastUpdate) / PUSH_MS);
+      // Exponential smoothing, expressed per 16.67ms so it is display-independent.
+      const rate = 1 - Math.pow(1 - CATCHUP_PER_FRAME * (1 + settle), dt / 16.67);
+
       for (const [id, target] of this.target) {
         const cur = this.current.get(id);
         if (!cur) { this.current.set(id, { ...target }); continue; }
-        cur.lat += (target.lat - cur.lat) * 0.08 * (1 + t);
-        cur.lon += (target.lon - cur.lon) * 0.08 * (1 + t);
+        cur.lat += (target.lat - cur.lat) * rate;
+        cur.lon += (target.lon - cur.lon) * rate;
       }
       this.paint();
       this.raf = requestAnimationFrame(step);
@@ -702,9 +726,9 @@ const TrainMap = {
     new maplibregl.Popup({ closeButton: false, offset: 12, className: 'train-popup' })
       .setLngLat(e.lngLat)
       .setHTML(
-        `<div style="font:600 12.5px Inter,sans-serif;color:#eef2f8">${p.label}</div>` +
-        `<div style="font:400 11.5px Inter,sans-serif;color:#a8b6ca;margin-top:3px">${p.from} → ${p.to}</div>` +
-        `<div style="font:600 11.5px ui-monospace,monospace;color:${p.color};margin-top:4px">${p.delay >= 0 ? '+' : ''}${p.delay} min</div>`)
+        `<div class="popup-title">${p.label}</div>` +
+        `<div class="popup-route">${p.from} → ${p.to}</div>` +
+        `<div class="popup-delay" style="color:${p.color}">${p.delay >= 0 ? '+' : ''}${p.delay} min</div>`)
       .addTo(this.map);
   },
 };
@@ -841,7 +865,17 @@ function apply(payload) {
   // Metrics
   setCounter('punctuality', punctuality.punctuality_pct, 1);
   setCounter('meandelay', minutes(punctuality.mean_delay_seconds), 1);
-  setCounter('trips', (payload.positions || []).length, 0);
+  // The label says "services running", so the number has to be the trains
+  // actually on the map, not every trip seen in the last 24h. The server flags
+  // a truncated list rather than letting a cap pass itself off as a count.
+  const live = (payload.positions || []).length;
+  setCounter('trips', live, 0);
+  const liveNote = document.getElementById('trips-note');
+  if (liveNote) {
+    liveNote.textContent = payload.positions_capped
+      ? `showing the first ${live.toLocaleString()}, more are running`
+      : 'long-distance services running now';
+  }
   setCounter('maxdelay', Math.round(minutes(punctuality.max_delay_seconds)), 0);
   setCounter('skipped', (payload.cancellations || {}).skipped_stops, 0);
   setCounter('observations', summary.observations_stored, 0);
@@ -886,9 +920,12 @@ async function loadModel() {
   } catch { /* the dashboard is useful without the model */ }
 }
 
-async function loadTrip(tripId, label) {
+async function loadTrip(tripId, label, serviceDate) {
   try {
-    const rows = await fetch(`/api/trips/${encodeURIComponent(tripId)}/propagation`).then((r) => r.json());
+    // Pin the run the table is showing. A trip_id repeats daily, and without
+    // the date the chart can trace a different day's journey than the row.
+    const qs = serviceDate ? `?service_date=${encodeURIComponent(serviceDate)}` : '';
+    const rows = await fetch(`/api/trips/${encodeURIComponent(tripId)}/propagation${qs}`).then((r) => r.json());
     renderPropagation(rows, label);
     const tag = $('prop-tag');
     if (tag) { tag.textContent = label; tag.style.color = C.ice; }
@@ -912,7 +949,7 @@ function selectRow(row) {
   for (const other of document.querySelectorAll('tr[data-trip]')) other.removeAttribute('aria-selected');
   row.setAttribute('aria-selected', 'true');
   selectedTrip = row.dataset.trip;
-  loadTrip(row.dataset.trip, row.dataset.label);
+  loadTrip(row.dataset.trip, row.dataset.label, row.dataset.date);
 }
 
 /* --- connection ----------------------------------------------------------- */

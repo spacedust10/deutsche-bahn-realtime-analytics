@@ -9,8 +9,10 @@ from dbrt.gtfs_rt import StopTimeUpdateRecord
 
 pytestmark = pytest.mark.postgres
 
-BASE = dt.datetime(2026, 8, 18, 6, 0, tzinfo=dt.timezone.utc)
-DAY = dt.date(2026, 8, 18)
+# Relative to now for the same reason as tests/test_analytics.py: the endpoints
+# filter on `now() - interval`, so a fixed date expires out of the window.
+BASE = dt.datetime.now(tz=dt.timezone.utc) - dt.timedelta(hours=1)
+DAY = BASE.date()
 
 
 def rec(trip, seq, delay, stop_id, category="ICE", ts=None):

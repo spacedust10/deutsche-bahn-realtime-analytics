@@ -81,12 +81,22 @@ CREATE INDEX IF NOT EXISTS idx_stu_latest
 
 -- Latest observation per (trip, service date, stop): the "now" state of the
 -- network, without collapsing the history that feeds ML and propagation work.
+-- The window is anchored to the newest observation rather than to now(), which
+-- matters twice: a warehouse left idle overnight still reports its last known
+-- state instead of going blank, and tests seeding fixed historical timestamps
+-- stay valid however long ago they were written.
+--
+-- Without the bound this scans the entire fact table, so dashboard latency grew
+-- with every day collected: measured at 2.1M rows, the payload had drifted from
+-- 1.8s back up to 7.0s, against a 10s push interval.
 CREATE OR REPLACE VIEW current_stop_delays AS
 SELECT DISTINCT ON (trip_id, service_date, stop_sequence)
        trip_id, service_date, stop_sequence, stop_id,
        arrival_delay, departure_delay, schedule_relationship,
        route_category, feed_timestamp
 FROM   stop_time_updates
+WHERE  feed_timestamp > (SELECT max(feed_timestamp) FROM stop_time_updates)
+                        - INTERVAL '36 hours'
 ORDER  BY trip_id, service_date, stop_sequence, feed_timestamp DESC;
 
 -- ---------------------------------------------------------------------------

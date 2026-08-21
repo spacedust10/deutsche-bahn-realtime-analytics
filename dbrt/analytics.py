@@ -114,17 +114,27 @@ def category_breakdown(warehouse, hours: int = 24) -> list[dict]:
 
 
 def delay_propagation(warehouse, trip_id: str, service_date: dt.date | None = None) -> list[dict]:
-    """How one train's delay evolves stop by stop along its route."""
+    """How one train's delay evolves stop by stop along one run of its route.
+
+    A trip_id repeats every service day, so without pinning the date this
+    returns several runs at once and, ordered by stop_sequence, interleaves
+    them: seq 0 yesterday, seq 0 today, seq 1 yesterday. On the chart that is a
+    sawtooth rather than a route. Absent an explicit date, the newest run wins.
+    """
     rows = warehouse.fetchall(
         """
         SELECT d.stop_sequence, d.stop_id, COALESCE(s.stop_name, d.stop_id),
                d.arrival_delay, d.departure_delay, s.stop_lat, s.stop_lon, d.route_category
         FROM   current_stop_delays d
         LEFT   JOIN stops s ON s.stop_id = d.stop_id
-        WHERE  d.trip_id = %s AND (%s::date IS NULL OR d.service_date = %s)
+        WHERE  d.trip_id = %s
+          AND  d.service_date = COALESCE(
+                   %s::date,
+                   (SELECT max(service_date) FROM current_stop_delays WHERE trip_id = %s)
+               )
         ORDER  BY d.stop_sequence
         """,
-        (trip_id, service_date, service_date),
+        (trip_id, service_date, trip_id),
     )
     return [
         {"stop_sequence": r[0], "stop_id": r[1], "stop_name": r[2],
@@ -342,14 +352,28 @@ def history_window(warehouse) -> dict[str, Any]:
     }
 
 
-def live_positions(warehouse, at: dt.datetime | None = None, limit: int = 600) -> list[dict]:
+# A long-distance service runs for hours, so observations older than this
+# cannot belong to a train still moving at `at`.
+SERVICE_WINDOW_HOURS = 12
+# Trains stay on the map briefly after terminating, otherwise they blink out
+# under the reader's cursor the moment they touch the final platform.
+ARRIVED_GRACE_MINUTES = 20
+
+
+def live_positions(warehouse, at: dt.datetime | None = None, limit: int = 1200) -> list[dict]:
     """Where every tracked train is at instant `at`, interpolated between stops.
 
     Only observations published at or before `at` are considered, so scrubbing
     the slider backwards reproduces what was actually known then rather than
     back-dating later corrections.
+
+    The window is bounded on both sides. Without a lower bound every trip ever
+    collected stays parked at its terminus, and the map fills with services that
+    finished days ago: on a three-day warehouse that was 1,108 ghosts against 82
+    trains actually running.
     """
     at = at or dt.datetime.now(tz=dt.timezone.utc)
+    window_start = at - dt.timedelta(hours=SERVICE_WINDOW_HOURS)
 
     rows = warehouse.fetchall(
         """
@@ -359,6 +383,7 @@ def live_positions(warehouse, at: dt.datetime | None = None, limit: int = 600) -
                    COALESCE(departure_delay, arrival_delay) AS delay
             FROM   stop_time_updates
             WHERE  feed_timestamp <= %s
+              AND  feed_timestamp > %s
               AND  COALESCE(departure_delay, arrival_delay) IS NOT NULL
             ORDER  BY trip_id, service_date, stop_sequence, feed_timestamp DESC
         )
@@ -374,7 +399,7 @@ def live_positions(warehouse, at: dt.datetime | None = None, limit: int = 600) -
         WHERE  s.stop_lat IS NOT NULL AND s.stop_lon IS NOT NULL
         ORDER  BY k.trip_id, k.service_date, k.stop_sequence
         """,
-        (at,),
+        (at, window_start),
     )
 
     by_trip: dict[tuple[str, dt.date], list[tuple]] = {}
@@ -389,6 +414,13 @@ def live_positions(warehouse, at: dt.datetime | None = None, limit: int = 600) -
         if len(positions) >= limit:
             break
     return positions
+
+
+def _recently_arrived(last_arrival: dt.datetime | None, at: dt.datetime) -> bool:
+    """True while a terminated service should still be drawn."""
+    if last_arrival is None:
+        return False
+    return (at - last_arrival) <= dt.timedelta(minutes=ARRIVED_GRACE_MINUTES)
 
 
 def _place_train(trip_id: str, service_date: dt.date, calls: list[tuple], at: dt.datetime) -> dict | None:
@@ -425,6 +457,10 @@ def _place_train(trip_id: str, service_date: dt.date, calls: list[tuple], at: dt
                 "delay_seconds": first["delay"], "bearing": _bearing((first["lat"], first["lon"]), (timeline[1]["lat"], timeline[1]["lon"])),
                 "status": "not_departed"}
     if last["arrive"] and at >= last["arrive"]:
+        # Terminated. Hold it briefly, then let it leave the map rather than
+        # parking it at the terminus indefinitely.
+        if not _recently_arrived(last["arrive"], at):
+            return None
         prev = timeline[-2]
         return {**meta, "lat": last["lat"], "lon": last["lon"], "progress": 1.0,
                 "from_stop": prev["name"], "to_stop": last["name"],
