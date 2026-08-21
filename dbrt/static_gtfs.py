@@ -1,5 +1,9 @@
 """Static GTFS timetable: the reference data the realtime feed points at.
 
+Parsing only. Fetching the archive is an adapter concern and lives in
+feed_client, so this module stays testable against a local zip with no network
+and no HTTP library in the ring.
+
 GTFS-RT carries identifiers, not meaning. Joining trip_id and stop_id against
 the static timetable is what turns "trip 1536569 delayed 180s at stop 294362"
 into "ICE 41 is 3 minutes late at Hanau Hbf" — and it is also how the
@@ -11,17 +15,17 @@ from __future__ import annotations
 import csv
 import datetime as dt
 import io
-import time
 import zipfile
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
-import requests
+from . import domain
 
-# Categories the architecture scopes the project to, plus the EuroCity Express
-# variant DB publishes alongside EC.
-LONG_DISTANCE_CATEGORIES = frozenset({"ICE", "IC", "EC", "ECE"})
+# Scope and classification are business rules, not parsing details, so they live
+# in the domain layer. Re-exported here because this module is where callers
+# have always found them.
+LONG_DISTANCE_CATEGORIES = domain.LONG_DISTANCE_CATEGORIES
 
 # GTFS clock times are offsets from the start of the local service day.
 # ponytail: fixed CEST offset, swap for zoneinfo if winter-timetable accuracy matters.
@@ -91,10 +95,8 @@ def absolute_time(service_date: dt.date, offset_seconds: int) -> dt.datetime:
 
 
 def category_from_short_name(short_name: str | None) -> str:
-    """"ICE 41" -> "ICE". The feed puts the line number in route_short_name."""
-    if not short_name:
-        return ""
-    return short_name.strip().split()[0] if short_name.strip() else ""
+    """"ICE 41" -> "ICE". Delegates to the domain layer, which owns the rule."""
+    return domain.category_of(short_name)
 
 
 class StaticTimetable:
@@ -162,41 +164,10 @@ class StaticTimetable:
         return stop.stop_name if stop else stop_id
 
     def is_long_distance(self, trip_id: str) -> bool:
-        return self.category_for_trip(trip_id) in LONG_DISTANCE_CATEGORIES
+        return domain.is_long_distance(self.category_for_trip(trip_id))
 
     def long_distance_trip_ids(self) -> set[str]:
         return {tid for tid in self.trips if self.is_long_distance(tid)}
-
-
-# --- download --------------------------------------------------------------
-
-STATIC_MAX_AGE_SECONDS = 12 * 3600  # DB regenerates the timetable daily.
-DOWNLOAD_TIMEOUT_SECONDS = 120
-
-
-def download_static(
-    settings,
-    dest: Path | str,
-    session=None,
-    max_age_seconds: int = STATIC_MAX_AGE_SECONDS,
-) -> Path:
-    """Fetch the timetable ZIP, reusing a recent local copy when there is one.
-
-    The timetable changes daily while the realtime feed changes every few
-    seconds, so re-downloading it on every collector start is pure waste.
-    """
-    dest = Path(dest)
-    if dest.exists() and (time.time() - dest.stat().st_mtime) < max_age_seconds:
-        return dest
-
-    source = settings.static_source()
-    session = session or requests.Session()
-    response = session.get(source.url, headers=source.headers, timeout=DOWNLOAD_TIMEOUT_SECONDS)
-    response.raise_for_status()
-
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    dest.write_bytes(response.content)
-    return dest
 
 
 # --- CSV plumbing ----------------------------------------------------------

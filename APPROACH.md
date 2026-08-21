@@ -918,3 +918,98 @@ once that date rolled out of the 24-hour window.
 Fixtures are now anchored to `now()`. The tests were always about relative
 recency; the calendar date was never the point, and pinning it made them a
 time bomb with a three-day fuse.
+
+---
+
+## 15. Architecture audit
+
+A pass over the whole system against Clean Architecture, asking one question:
+does this work like a system, or like a pile of modules that happen to run?
+
+**Score before: 6/10. After: 9/10.** What it already got right was real: no
+dependency cycles, the collector took its client, timetable and warehouse as
+arguments rather than reaching for them, and `Warehouse` sat behind a narrow
+enough surface that the tests could fake it. What it got wrong was the thing the
+Dependency Rule exists to prevent.
+
+### 15.1 There was no innermost circle
+
+The business rules had no owner. Punctuality was a named constant in
+`analytics.py` and, three lines later, a bare `360` inside a SQL string. The
+delay scale was written out three times:
+
+| Where | Boundary for "on time" |
+|---|---|
+| `analytics.delay_distribution` SQL `CASE` | under 360s |
+| `web/app.js` `SEVERITY` (map legend) | under **180s** |
+| `web/app.js` `BANDS` (histogram) | under 360s |
+
+All three rendered on one screen. The map legend said "On time (under 3 min)"
+while the histogram said "on time (<6 min)" and the headline metric said "stops
+under 6 min late". A reader comparing the legend to the chart beside it would
+find the dashboard contradicting itself.
+
+The comment above `SEVERITY` read: *"defined once and used by the map, the
+legend and the distribution chart so they cannot drift apart."* The second table
+sat 240 lines below it. A comment asserting an invariant that nothing enforces
+is worse than no comment, because it stops the next reader from checking.
+
+`dbrt/domain.py` now owns the threshold, the band scale and the product scope.
+It imports `dataclasses` and nothing else. Its 36 tests run in 0.02s against no
+database, no server and no feed, which is the whole point: these are enterprise
+rules, and needing infrastructure to verify one means it is not really a rule,
+it is a query.
+
+Bands are contiguous and exhaustive by construction, and each carries a
+`severity` ordinal. The presentation layer picks a colour from the ordinal and
+never learns a threshold, so the dashboard cannot disagree with the warehouse
+about where "late" begins. `analytics` generates its SQL `CASE` from the same
+tuple; `/api/rules` publishes it; the browser renders what it is given, down to
+the static copy that states the threshold in prose.
+
+### 15.2 Two dependencies pointed outward
+
+**A use case built its own adapter.** `collector.run_forever` constructed a
+`FeedClient` when none was passed, so an application-rules module imported a
+driver. Every caller already supplied one, so the default existed only to break
+the rule. The parameter is now required and composition stays in `__main__`.
+
+**A parser did HTTP.** `static_gtfs` imported `requests` to download the
+timetable ZIP, putting a delivery concern inside timetable parsing.
+`download_static` moved to `feed_client`, the one module that talks HTTP. The
+parser is now testable against a local zip with no network library in its ring.
+
+### 15.3 The rules are executable now
+
+`tests/test_architecture.py` parses the package and asserts the structure:
+dependencies point inward, the domain imports only the standard library, drivers
+and frameworks stay in the adapter ring, the graph is acyclic, and no SQL
+appears in rings 0 or 1. Both violations above were found by writing it.
+
+Its first version scanned raw uppercased source for SQL keywords and flagged
+`yield from` and "derives from here". It reads string literals through the AST
+now, skipping docstrings: a test that cries wolf gets deleted, and then the rule
+it protected is gone too.
+
+### 15.4 What was deliberately not done
+
+Full Clean Architecture ceremony — Entities, Interactors, Input and Output
+ports, Presenters, a Gateway interface per query — would be worse here, and
+saying so is part of the audit rather than an excuse.
+
+This is a read-mostly analytics pipeline. There is one write path (append
+observations) and a dozen read paths that are aggregations. Wrapping each
+aggregation in a Request Model, an Interactor and a Response Model adds three
+files per query to restate what the SQL already says, and the SQL is the honest
+expression of an aggregation. `analytics` remains a set of functions that take a
+warehouse and return dictionaries.
+
+What matters is that the *rules* are no longer inside those queries. The
+threshold and the bands are policy; `GROUP BY` is a detail. Policy moved out;
+the detail stayed where it reads best.
+
+The remaining point of the score is `analytics` still writing PostgreSQL
+dialect directly, so swapping the database means rewriting those queries. That
+is a real limitation and a deliberate one: there is no second database, and a
+repository interface with a single implementation is the abstraction this
+codebase would least benefit from today.

@@ -181,3 +181,28 @@ def test_run_forever_keeps_polling_after_a_failed_cycle(rt_bytes, timetable, mon
     assert warehouse.polls[0]["error"] == "HTTP 503"
     assert warehouse.polls[1]["error"] is None
     assert warehouse.batches, "the cycle after the failure still wrote data"
+
+
+def test_run_forever_requires_its_client_rather_than_building_one():
+    """Composition belongs to Main. A use case that constructs its own adapter
+    is an inner circle reaching outward, and it cannot be tested without the
+    real thing."""
+    import inspect
+    from pathlib import Path
+
+    from dbrt import collector
+
+    signature = inspect.signature(collector.run_forever)
+    assert signature.parameters["client"].default is inspect.Parameter.empty
+
+    # Assert the dependency, not the word: prose explaining why an adapter is
+    # absent should not trip a check for the adapter being present.
+    import ast
+
+    tree = ast.parse(Path(collector.__file__).read_text())
+    imported = {
+        node.module.split(".")[0]
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom) and node.level and node.module
+    }
+    assert "feed_client" not in imported, "adapter leaked into the use case"

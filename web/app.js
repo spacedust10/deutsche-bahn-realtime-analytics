@@ -26,17 +26,38 @@ const C = {
   ok: '#199e70', warn: '#c98500', bad: '#e66767',
 };
 
-/* The severity scale, defined once and used by the map, the legend and the
-   distribution chart so they cannot drift apart. */
-const SEVERITY = [
-  { max: 180,       color: C.d0, label: 'On time (under 3 min)' },
-  { max: 360,       color: C.d1, label: '3 to 6 min' },
-  { max: 900,       color: C.d2, label: '6 to 15 min' },
-  { max: Infinity,  color: C.d3, label: '15 min or more' },
-];
+/* The delay scale is a business rule and belongs to the server, which publishes
+   it with every payload. This page used to keep two hand-written copies of the
+   boundaries, and they disagreed: the legend called anything under 3 minutes
+   "on time" while the histogram and the headline metric used DB's 6.
 
-const severityColor = (seconds) =>
-  (SEVERITY.find((band) => (seconds ?? 0) < band.max) || SEVERITY[SEVERITY.length - 1]).color;
+   The severity ordinal, not the boundary, picks the colour: the ramp is a
+   presentation concern and the thresholds are not. */
+const SEVERITY_COLORS = [C.d0, C.d1, C.d2, C.d3];
+
+/* Used only until the first payload lands. Deliberately the same shape the
+   server sends, so there is one code path rather than two. */
+let RULES = {
+  punctuality_threshold_seconds: 360,
+  delay_bands: [
+    { key: 'early',        label: 'Early',            lower_seconds: null, upper_seconds: 0,    severity: 0 },
+    { key: 'on_time',      label: 'On time (<6 min)', lower_seconds: 0,    upper_seconds: 360,  severity: 0 },
+    { key: 'late_6_15',    label: '6-15 min',         lower_seconds: 360,  upper_seconds: 900,  severity: 1 },
+    { key: 'late_15_30',   label: '15-30 min',        lower_seconds: 900,  upper_seconds: 1800, severity: 2 },
+    { key: 'late_30_60',   label: '30-60 min',        lower_seconds: 1800, upper_seconds: 3600, severity: 3 },
+    { key: 'late_60_plus', label: '60+ min',          lower_seconds: 3600, upper_seconds: null, severity: 3 },
+  ],
+};
+
+function bandFor(seconds) {
+  const value = seconds ?? 0;
+  return RULES.delay_bands.find(
+    (b) => (b.lower_seconds === null || value >= b.lower_seconds) &&
+           (b.upper_seconds === null || value < b.upper_seconds),
+  ) || RULES.delay_bands[RULES.delay_bands.length - 1];
+}
+
+const severityColor = (seconds) => SEVERITY_COLORS[bandFor(seconds).severity];
 
 const CATEGORY_COLOR = { ICE: C.ice, IC: C.ic, EC: C.ec, ECE: C.ece };
 const categoryColor = (name) => CATEGORY_COLOR[name] || C.oth;
@@ -266,21 +287,9 @@ function renderPunctuality(rows) {
   const latest = rows[rows.length - 1].punctuality_pct;
   const tone = latest >= 80 ? 'good' : latest >= 65 ? 'warn' : 'bad';
   setReading('read-punctuality', tone,
-    `${fmt(latest)}% of calls are running under the 6-minute threshold right now, ` +
+    `${fmt(latest)}% of calls are running under the ${Math.round(RULES.punctuality_threshold_seconds / 60)}-minute threshold right now, ` +
     `${latest >= 80 ? 'at or above' : 'below'} the 80% mark DB publishes as its long-distance target.`);
 }
-
-/* The API names the bands but does not carry their bounds, so severity is
-   resolved from the band label. Keeping the order here also guarantees the axis
-   reads as an ordinal scale rather than whatever order SQL returned. */
-const BANDS = [
-  { band: 'early',            lower: -60 },
-  { band: 'on time (<6 min)', lower: 0 },
-  { band: '6-15 min',         lower: 360 },
-  { band: '15-30 min',        lower: 900 },
-  { band: '30-60 min',        lower: 1800 },
-  { band: '60+ min',          lower: 3600 },
-];
 
 function renderDistribution(rows) {
   if (!rows || !rows.length) { showEmpty('chart-distribution', 'No observations yet', 'Delay bands appear once the collector has stored its first poll.'); return; }
@@ -288,9 +297,8 @@ function renderDistribution(rows) {
   const instance = chart('chart-distribution');
   if (!instance) return;
 
-  const byBand = new Map(rows.map((r) => [r.band, r.stops || 0]));
-  const ordered = BANDS.filter((b) => byBand.has(b.band))
-    .map((b) => ({ ...b, stops: byBand.get(b.band) }));
+  // The rows already arrive in domain order, labelled and carrying severity.
+  const ordered = rows.map((r) => ({ ...r, stops: r.stops || 0 }));
   const total = ordered.reduce((sum, r) => sum + r.stops, 0) || 1;
 
   instance.setOption({
@@ -298,25 +306,29 @@ function renderDistribution(rows) {
     tooltip: baseTooltip({ trigger: 'item', formatter: (p) => `${p.name}<br/><b>${p.value.toLocaleString()}</b> calls (${fmt((p.value / total) * 100)}%)` }),
     grid: baseGrid({ left: 8, bottom: 34 }),
     xAxis: {
-      type: 'category', data: ordered.map((r) => r.band),
+      type: 'category', data: ordered.map((r) => r.label),
       axisLabel: { ...AXIS_LABEL, interval: 0, rotate: 22, hideOverlap: false },
       axisLine: { lineStyle: { color: C.line } }, axisTick: { show: false },
     },
     yAxis: valueAxis('calls'),
     series: [{
       type: 'bar',
-      data: ordered.map((r) => ({ value: r.stops, itemStyle: { color: severityColor(r.lower) } })),
+      data: ordered.map((r) => ({ value: r.stops, itemStyle: { color: SEVERITY_COLORS[r.severity] } })),
       barMaxWidth: 46,
       itemStyle: { borderRadius: [4, 4, 0, 0] },   // 4px rounded data-end on the baseline
     }],
   });
 
-  const late = ordered.filter((r) => r.lower >= 360).reduce((s, r) => s + r.stops, 0);
+  const threshold = RULES.punctuality_threshold_seconds;
+  const late = ordered
+    .filter((r) => r.lower_seconds !== null && r.lower_seconds >= threshold)
+    .reduce((s, r) => s + r.stops, 0);
   const pct = (late / total) * 100;
   const biggest = ordered.reduce((a, b) => (a.stops > b.stops ? a : b));
   setReading('read-distribution', pct > 20 ? 'bad' : pct > 10 ? 'warn' : 'good',
-    `${fmt(pct)}% of observed calls are 6 minutes late or worse (${late.toLocaleString()} of ${total.toLocaleString()}). ` +
-    `Most of the network sits in the "${biggest.band}" band.`);
+    `${fmt(pct)}% of observed calls are ${Math.round(threshold / 60)} minutes late or worse ` +
+    `(${late.toLocaleString()} of ${total.toLocaleString()}). ` +
+    `Most of the network sits in the "${biggest.label}" band.`);
 }
 
 function renderStations(rows) {
@@ -733,13 +745,39 @@ const TrainMap = {
   },
 };
 
+/* "Under 6 min", "6-15 min", "30 min or more": a span described from its own
+   bounds, in minutes, without restating any threshold. */
+function rangeLabel(lowerSeconds, upperSeconds) {
+  const min = (s) => Math.round(s / 60);
+  if (lowerSeconds === null || lowerSeconds <= 0) return `Under ${min(upperSeconds)} min`;
+  if (upperSeconds === null) return `${min(lowerSeconds)} min or more`;
+  return `${min(lowerSeconds)}-${min(upperSeconds)} min`;
+}
+
 function renderLegend() {
   const host = $('map-legend');
   if (!host) return;
-  // The severity ramp is multi-hue semantic heat, so it ships with this scale
-  // legend rather than relying on hue being self-evident.
-  host.innerHTML = SEVERITY.map((band) =>
-    `<div class="legend-row"><i style="background:${band.color}"></i>${band.label}</div>`).join('');
+
+  /* One row per colour step, labelled by the span of bands that share it, so
+     the legend describes the ramp the map actually draws. The severity ramp is
+     multi-hue semantic heat and ships with this scale legend rather than
+     relying on hue being self-evident. */
+  const bySeverity = new Map();
+  for (const band of RULES.delay_bands) {
+    if (!bySeverity.has(band.severity)) bySeverity.set(band.severity, []);
+    bySeverity.get(band.severity).push(band);
+  }
+
+  host.innerHTML = [...bySeverity.entries()]
+    .sort((a, b) => a[0] - b[0])
+    .map(([severity, bands]) => {
+      // One band keeps its own label; several are described by the span they
+      // cover, which reads better than gluing two labels together.
+      const label = bands.length === 1
+        ? bands[0].label
+        : rangeLabel(bands[0].lower_seconds, bands[bands.length - 1].upper_seconds);
+      return `<div class="legend-row"><i style="background:${SEVERITY_COLORS[severity]}"></i>${label}</div>`;
+    }).join('');
 }
 
 /* --- time slider ---------------------------------------------------------- */
@@ -848,6 +886,16 @@ let selectedTrip = null;
 let lastFeedTimestamp = null;
 
 function apply(payload) {
+  if (payload.rules && payload.rules.delay_bands) {
+    RULES = payload.rules;
+    renderLegend();   // Boundaries may have moved; the legend describes them.
+    // Static copy states the threshold too, and prose that contradicts the data
+    // is the same defect in a different font.
+    const mins = Math.round(RULES.punctuality_threshold_seconds / 60);
+    for (const node of document.querySelectorAll('[data-threshold-min]')) {
+      node.textContent = node.dataset.thresholdMin.replace('{n}', mins);
+    }
+  }
   const summary = payload.summary || {};
   const punctuality = summary.punctuality || {};
   const feed = summary.feed || {};

@@ -108,6 +108,22 @@ never ambiguous about their lineage.
 
 ---
 
+## Layering
+
+Dependencies point inward; `tests/test_architecture.py` enforces it.
+
+| Ring | Modules | May import |
+|---|---|---|
+| 0 · Business rules | `domain` | the standard library, nothing else |
+| 1 · Feed & timetable | `config`, `gtfs_rt`, `static_gtfs` | ring 0 |
+| 2 · Application rules | `analytics`, `ml`, `collector` | rings 0-1 |
+| 3 · Adapters & drivers | `storage`, `feed_client`, `api` | rings 0-2 |
+| 4 · Composition root | `__main__` | everything |
+
+`domain` owns the punctuality threshold, the delay band scale and the
+long-distance product scope. Every other layer derives from it, including the
+browser, which fetches the rules from `/api/rules` rather than restating them.
+
 ## Architecture
 
 ```
@@ -166,6 +182,7 @@ GTFS-RT feed  --HTTPS+ETag-->  FeedClient
 | `GET /api/cancellations` | Skipped stops and cancelled services |
 | `GET /api/trips/worst` | Most delayed services |
 | `GET /api/trips/{trip_id}/propagation` | One service's delay along its route |
+| `GET /api/rules` | Punctuality threshold, delay bands and product scope |
 | `GET /api/model` | Model metrics and baseline comparison |
 | `WS /ws` | Full dashboard payload every 10 seconds, matching the feed's own republish rate |
 
@@ -173,7 +190,7 @@ GTFS-RT feed  --HTTPS+ETag-->  FeedClient
 
 ## Tests
 
-Built test-first. 204 tests across unit, database, API and live-feed layers.
+Built test-first. 260 tests across unit, database, API and live-feed layers.
 
 ```bash
 make test

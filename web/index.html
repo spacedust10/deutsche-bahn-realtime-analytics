@@ -52,7 +52,7 @@
   <article class="metric">
     <span class="metric-label">Punctuality</span>
     <span class="metric-value"><span data-counter="punctuality" data-decimals="1">—</span><em>%</em></span>
-    <span class="metric-note">stops under 6 min late (DB definition)</span>
+    <span class="metric-note" data-threshold-min="stops under {n} min late (DB definition)">stops under 6 min late (DB definition)</span>
     <div class="metric-spark" id="spark-punctuality"></div>
   </article>
   <article class="metric">
@@ -149,7 +149,7 @@
       <div class="panel-head">
         <h2>Punctuality over time</h2>
         <p class="panel-desc">
-          Share of calls under Deutsche Bahn's 6-minute threshold, per bucket.
+          <span data-threshold-min="Share of calls under Deutsche Bahn's {n}-minute threshold, per bucket.">Share of calls under Deutsche Bahn's 6-minute threshold, per bucket.</span>
           Kept on its own axis rather than overlaid on the delay chart, because
           two scales on one plot invent a correlation that is not in the data.
         </p>

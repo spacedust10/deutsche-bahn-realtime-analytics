@@ -14,9 +14,11 @@ import datetime as dt
 import math
 from typing import Any
 
-from . import static_gtfs
+from . import domain, static_gtfs
 
-PUNCTUALITY_THRESHOLD_SECONDS = 360  # DB: "pünktlich" = under 6 minutes late.
+# Re-exported for callers that already import it from here. The rule itself
+# lives in the domain layer; this is an alias, not a second definition.
+PUNCTUALITY_THRESHOLD_SECONDS = domain.PUNCTUALITY_THRESHOLD_SECONDS
 
 # Delay is measured on arrival where the feed provides it, otherwise departure;
 # the first stop of a trip has no arrival, the last has no departure.
@@ -229,19 +231,33 @@ def network_snapshot(warehouse, limit: int = 400) -> list[dict]:
     ]
 
 
+def _band_case_sql(column: str) -> str:
+    """Render domain.DELAY_BANDS as a SQL CASE expression.
+
+    Generated rather than written out, so the boundaries cannot drift from the
+    ones the rest of the system uses. The band's ordinal is prefixed to force
+    sort order in SQL and stripped again on the way out.
+    """
+    arms = []
+    for index, band in enumerate(domain.DELAY_BANDS):
+        if band.upper is None:
+            arms.append(f"ELSE '{index}:{band.key}'")
+        else:
+            arms.append(f"WHEN {column} < {band.upper} THEN '{index}:{band.key}'")
+    return "CASE\n                     " + "\n                     ".join(arms) + "\n                   END"
+
+
 def delay_distribution(warehouse, hours: int = 24) -> list[dict]:
-    """Histogram of delays in the bands a passenger actually feels."""
+    """Histogram of delays in the bands a passenger actually feels.
+
+    Bands come from the domain layer; nothing about where they fall is decided
+    here. Every band is returned even when empty, so a bar never silently
+    disappears from the chart just because nothing landed in it this window.
+    """
     rows = warehouse.fetchall(
         f"""
         SELECT band, count(*) FROM (
-            SELECT CASE
-                     WHEN {_DELAY} < 0    THEN '5:early'
-                     WHEN {_DELAY} < 360  THEN '0:on time (<6 min)'
-                     WHEN {_DELAY} < 900  THEN '1:6-15 min'
-                     WHEN {_DELAY} < 1800 THEN '2:15-30 min'
-                     WHEN {_DELAY} < 3600 THEN '3:30-60 min'
-                     ELSE '4:60+ min'
-                   END AS band
+            SELECT {_band_case_sql(_DELAY)} AS band
             FROM   current_stop_delays
             WHERE  {_DELAY} IS NOT NULL
               AND  feed_timestamp > now() - make_interval(hours => %s)
@@ -250,8 +266,18 @@ def delay_distribution(warehouse, hours: int = 24) -> list[dict]:
         """,
         (hours,),
     )
-    # The numeric prefix only exists to force sort order; strip it for display.
-    return [{"band": r[0].split(":", 1)[1], "stops": r[1]} for r in rows]
+    counts = {r[0].split(":", 1)[1]: r[1] for r in rows}
+    return [
+        {
+            "band": band.key,
+            "label": band.label,
+            "severity": band.severity,
+            "lower_seconds": band.lower,
+            "upper_seconds": band.upper,
+            "stops": counts.get(band.key, 0),
+        }
+        for band in domain.DELAY_BANDS
+    ]
 
 
 def cancellations(warehouse, hours: int = 24) -> dict[str, Any]:
