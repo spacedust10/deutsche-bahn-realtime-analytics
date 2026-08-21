@@ -61,7 +61,8 @@ def test_live_feed_decodes_into_usable_records(live_feed):
 
 
 def test_static_timetable_still_exposes_the_columns_we_join_on(tmp_path):
-    from dbrt.static_gtfs import StaticTimetable, download_static
+    from dbrt.feed_client import download_static
+    from dbrt.static_gtfs import StaticTimetable
 
     settings = Settings.from_env({})
     try:
@@ -77,7 +78,8 @@ def test_static_timetable_still_exposes_the_columns_we_join_on(tmp_path):
 
 def test_live_trip_ids_still_join_against_the_static_timetable(live_feed, tmp_path):
     """The join is the whole pipeline: without it there is no long-distance scope."""
-    from dbrt.static_gtfs import StaticTimetable, download_static
+    from dbrt.feed_client import download_static
+    from dbrt.static_gtfs import StaticTimetable
 
     settings = Settings.from_env({})
     try:

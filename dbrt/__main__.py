@@ -7,8 +7,8 @@ from pathlib import Path
 
 from .collector import collect_once, run_forever
 from .config import Settings
-from .feed_client import FeedClient
-from .static_gtfs import StaticTimetable, download_static
+from .feed_client import FeedClient, download_static
+from .static_gtfs import StaticTimetable
 from .storage import Warehouse
 
 DATA_DIR = Path(__file__).resolve().parent.parent / "data"

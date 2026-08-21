@@ -83,15 +83,16 @@ def collect_once(client, timetable, warehouse) -> PollSummary:
     return summary
 
 
-def run_forever(settings, timetable, warehouse, client=None, iterations: int | None = None) -> None:
+def run_forever(settings, timetable, warehouse, client, iterations: int | None = None) -> None:
     """Poll on a fixed interval until interrupted (or `iterations` polls elapse).
 
     Sleeps for the remainder of the interval rather than a flat interval, so a
     slow poll does not compound into drift.
-    """
-    from .feed_client import FeedClient
 
-    client = client or FeedClient(settings)
+    `client` is required rather than defaulted. Building a FeedClient here would
+    make this use case import an adapter and reach outward, and every caller
+    already supplies one: composition is Main's job.
+    """
     completed = 0
 
     while iterations is None or completed < iterations:
