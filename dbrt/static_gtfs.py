@@ -1,5 +1,9 @@
 """Static GTFS timetable: the reference data the realtime feed points at.
 
+Parsing only. Fetching the archive is an adapter concern and lives in
+feed_client, so this module stays testable against a local zip with no network
+and no HTTP library in the ring.
+
 GTFS-RT carries identifiers, not meaning. Joining trip_id and stop_id against
 the static timetable is what turns "trip 1536569 delayed 180s at stop 294362"
 into "ICE 41 is 3 minutes late at Hanau Hbf" — and it is also how the
@@ -11,13 +15,10 @@ from __future__ import annotations
 import csv
 import datetime as dt
 import io
-import time
 import zipfile
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
-
-import requests
 
 from . import domain
 
@@ -167,37 +168,6 @@ class StaticTimetable:
 
     def long_distance_trip_ids(self) -> set[str]:
         return {tid for tid in self.trips if self.is_long_distance(tid)}
-
-
-# --- download --------------------------------------------------------------
-
-STATIC_MAX_AGE_SECONDS = 12 * 3600  # DB regenerates the timetable daily.
-DOWNLOAD_TIMEOUT_SECONDS = 120
-
-
-def download_static(
-    settings,
-    dest: Path | str,
-    session=None,
-    max_age_seconds: int = STATIC_MAX_AGE_SECONDS,
-) -> Path:
-    """Fetch the timetable ZIP, reusing a recent local copy when there is one.
-
-    The timetable changes daily while the realtime feed changes every few
-    seconds, so re-downloading it on every collector start is pure waste.
-    """
-    dest = Path(dest)
-    if dest.exists() and (time.time() - dest.stat().st_mtime) < max_age_seconds:
-        return dest
-
-    source = settings.static_source()
-    session = session or requests.Session()
-    response = session.get(source.url, headers=source.headers, timeout=DOWNLOAD_TIMEOUT_SECONDS)
-    response.raise_for_status()
-
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    dest.write_bytes(response.content)
-    return dest
 
 
 # --- CSV plumbing ----------------------------------------------------------

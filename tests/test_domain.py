@@ -9,7 +9,6 @@ import pytest
 
 from dbrt import domain
 
-
 # --- purity ----------------------------------------------------------------
 
 def test_the_domain_imports_nothing_outside_the_standard_library():
@@ -48,7 +47,7 @@ def test_bands_are_contiguous_with_no_gaps_or_overlaps():
     bands = domain.DELAY_BANDS
     assert bands[0].lower is None, "the first band must be open at the bottom"
     assert bands[-1].upper is None, "the last band must be open at the top"
-    for previous, following in zip(bands, bands[1:]):
+    for previous, following in zip(bands, bands[1:], strict=False):  # pairwise
         assert previous.upper == following.lower, f"gap between {previous.key} and {following.key}"
 
 

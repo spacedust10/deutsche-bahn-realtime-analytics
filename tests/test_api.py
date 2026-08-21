@@ -240,7 +240,7 @@ def test_served_bands_carry_everything_a_client_needs_to_render(client):
 
 def test_served_bands_stay_contiguous_over_the_wire(client):
     bands = client.get("/api/rules").json()["delay_bands"]
-    for previous, following in zip(bands, bands[1:]):
+    for previous, following in zip(bands, bands[1:], strict=False):  # pairwise
         assert previous["upper_seconds"] == following["lower_seconds"]
 
 

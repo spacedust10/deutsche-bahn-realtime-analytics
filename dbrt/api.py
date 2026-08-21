@@ -18,7 +18,7 @@ from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnec
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import analytics
+from . import analytics, domain
 from .config import Settings
 from .ml import DelayModel
 from .storage import Warehouse
@@ -165,6 +165,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             return {"trained": False, "detail": "no model on disk; run `make train`"}
         return {"trained": True, **model.metrics}
 
+    @app.get("/api/rules")
+    def rules() -> dict:
+        """The domain's rules, published so clients derive rather than restate.
+
+        The dashboard used to hold its own copies of these boundaries and they
+        drifted: the map legend called anything under 3 minutes on time while
+        the histogram and the headline metric used DB's 6.
+        """
+        return _rules()
+
     @app.get("/api/geo/network")
     def geo_network() -> dict:
         """Rail network as GeoJSON. Static between timetable reloads, so the
@@ -217,6 +227,24 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             return FileResponse(WEB_DIR / "index.html")
 
     return app
+
+
+def _rules() -> dict:
+    """Serialise the domain layer for transport. No rule is decided here."""
+    return {
+        "punctuality_threshold_seconds": domain.PUNCTUALITY_THRESHOLD_SECONDS,
+        "long_distance_categories": sorted(domain.LONG_DISTANCE_CATEGORIES),
+        "delay_bands": [
+            {
+                "key": band.key,
+                "label": band.label,
+                "severity": band.severity,
+                "lower_seconds": band.lower,
+                "upper_seconds": band.upper,
+            }
+            for band in domain.DELAY_BANDS
+        ],
+    }
 
 
 def _parse_instant(raw: str | None) -> dt.datetime:
@@ -284,7 +312,10 @@ def _dashboard_payload(
         "worst_trips": lambda: analytics.worst_trips(warehouse, limit=8),
     }
 
-    payload: dict[str, Any] = {"generated_at": dt.datetime.now(tz=dt.timezone.utc).isoformat()}
+    payload: dict[str, Any] = {
+        "generated_at": dt.datetime.now(tz=dt.timezone.utc).isoformat(),
+        "rules": _rules(),
+    }
 
     if pool is None:   # Tests and direct callers: sequential is fine and leaks nothing.
         for key, fn in jobs.items():
