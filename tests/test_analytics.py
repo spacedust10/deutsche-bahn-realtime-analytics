@@ -155,9 +155,25 @@ def test_network_snapshot_lists_currently_tracked_trains(seeded):
 
 def test_delay_distribution_buckets_delays_into_bands(seeded):
     rows = analytics.delay_distribution(seeded)
-    labels = [r["band"] for r in rows]
-    assert "on time" in labels[0].lower() or "<" in labels[0]
     assert sum(r["stops"] for r in rows) == 7
+
+
+def test_delay_distribution_returns_the_domain_bands_in_order(seeded):
+    """Keys and order come from the domain layer, so the chart cannot invent a
+    band the rest of the system does not recognise."""
+    from dbrt import domain
+
+    rows = analytics.delay_distribution(seeded)
+    assert [r["band"] for r in rows] == [b.key for b in domain.DELAY_BANDS]
+    assert all(r["label"] and r["severity"] is not None for r in rows)
+
+
+def test_delay_distribution_keeps_empty_bands_so_bars_do_not_vanish(seeded):
+    """A band nothing landed in this window is a zero, not a missing category;
+    dropping it makes the histogram silently change shape."""
+    rows = analytics.delay_distribution(seeded)
+    assert len(rows) == len(analytics.domain.DELAY_BANDS)
+    assert any(r["stops"] == 0 for r in rows)
 
 
 # --- cancellations ---------------------------------------------------------

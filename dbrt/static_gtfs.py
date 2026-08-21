@@ -19,9 +19,12 @@ from pathlib import Path
 
 import requests
 
-# Categories the architecture scopes the project to, plus the EuroCity Express
-# variant DB publishes alongside EC.
-LONG_DISTANCE_CATEGORIES = frozenset({"ICE", "IC", "EC", "ECE"})
+from . import domain
+
+# Scope and classification are business rules, not parsing details, so they live
+# in the domain layer. Re-exported here because this module is where callers
+# have always found them.
+LONG_DISTANCE_CATEGORIES = domain.LONG_DISTANCE_CATEGORIES
 
 # GTFS clock times are offsets from the start of the local service day.
 # ponytail: fixed CEST offset, swap for zoneinfo if winter-timetable accuracy matters.
@@ -91,10 +94,8 @@ def absolute_time(service_date: dt.date, offset_seconds: int) -> dt.datetime:
 
 
 def category_from_short_name(short_name: str | None) -> str:
-    """"ICE 41" -> "ICE". The feed puts the line number in route_short_name."""
-    if not short_name:
-        return ""
-    return short_name.strip().split()[0] if short_name.strip() else ""
+    """"ICE 41" -> "ICE". Delegates to the domain layer, which owns the rule."""
+    return domain.category_of(short_name)
 
 
 class StaticTimetable:
@@ -162,7 +163,7 @@ class StaticTimetable:
         return stop.stop_name if stop else stop_id
 
     def is_long_distance(self, trip_id: str) -> bool:
-        return self.category_for_trip(trip_id) in LONG_DISTANCE_CATEGORIES
+        return domain.is_long_distance(self.category_for_trip(trip_id))
 
     def long_distance_trip_ids(self) -> set[str]:
         return {tid for tid in self.trips if self.is_long_distance(tid)}

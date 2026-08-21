@@ -217,3 +217,37 @@ def test_history_window_endpoint_exposes_the_slider_range(client):
 def test_dashboard_payload_carries_positions_for_the_map(client):
     body = client.get("/api/dashboard").json()
     assert "positions" in body and "history_window" in body
+
+
+# --- business rules served to the browser ----------------------------------
+
+def test_rules_endpoint_publishes_the_domain_bands(client):
+    """The browser had its own copies of these boundaries. It now asks."""
+    body = client.get("/api/rules").json()
+
+    assert body["punctuality_threshold_seconds"] == 360
+    assert [b["key"] for b in body["delay_bands"]] == [
+        "early", "on_time", "late_6_15", "late_15_30", "late_30_60", "late_60_plus"
+    ]
+
+
+def test_served_bands_carry_everything_a_client_needs_to_render(client):
+    for band in client.get("/api/rules").json()["delay_bands"]:
+        assert band["label"]
+        assert band["severity"] in (0, 1, 2, 3)
+        assert "lower_seconds" in band and "upper_seconds" in band
+
+
+def test_served_bands_stay_contiguous_over_the_wire(client):
+    bands = client.get("/api/rules").json()["delay_bands"]
+    for previous, following in zip(bands, bands[1:]):
+        assert previous["upper_seconds"] == following["lower_seconds"]
+
+
+def test_rules_are_included_in_the_dashboard_payload(client):
+    """One round trip: the socket push carries the rules with the data."""
+    assert "rules" in client.get("/api/dashboard").json()
+
+
+def test_long_distance_scope_is_published_too(client):
+    assert set(client.get("/api/rules").json()["long_distance_categories"]) >= {"ICE", "IC", "EC"}
