@@ -12,8 +12,12 @@ from dbrt.gtfs_rt import StopTimeUpdateRecord
 
 pytestmark = pytest.mark.postgres
 
-BASE = dt.datetime(2026, 8, 18, 6, 0, tzinfo=dt.timezone.utc)
-DAY = dt.date(2026, 8, 18)
+# Anchored to now, not to a calendar date. Every analytic filters on
+# `now() - interval`, so fixtures pinned to a fixed day pass on the day they are
+# written and silently start returning nothing once that day rolls out of the
+# window. These tests are about relative recency; the actual date is irrelevant.
+BASE = dt.datetime.now(tz=dt.timezone.utc) - dt.timedelta(hours=1)
+DAY = BASE.date()
 
 
 def rec(trip, seq, arr, stop_id, ts=BASE, category="ICE"):
@@ -255,8 +259,9 @@ def _seed_two_runs(warehouse):
         "INSERT INTO stops (stop_id, stop_name, stop_lat, stop_lon) VALUES "
         "('S0','Alpha',50.0,8.0), ('S1','Beta',50.5,9.0), ('S2','Gamma',51.0,10.0)"
     )
-    base = dt.datetime(2026, 8, 21, 6, 0, tzinfo=dt.timezone.utc)
-    for day, delay in ((dt.date(2026, 8, 20), 14400), (dt.date(2026, 8, 21), 60)):
+    base = dt.datetime.now(tz=dt.timezone.utc) - dt.timedelta(hours=1)
+    today = base.date()
+    for day, delay in ((today - dt.timedelta(days=1), 14400), (today, 60)):
         for seq, stop in enumerate(("S0", "S1", "S2")):
             warehouse.execute(
                 """INSERT INTO stop_time_updates
@@ -281,7 +286,8 @@ def test_propagation_traces_one_run_not_every_date_interleaved(warehouse):
 def test_propagation_honours_an_explicit_service_date(warehouse):
     _seed_two_runs(warehouse)
 
-    rows = analytics.delay_propagation(warehouse, "t9", service_date=dt.date(2026, 8, 20))
+    yesterday = (dt.datetime.now(tz=dt.timezone.utc) - dt.timedelta(hours=1)).date() - dt.timedelta(days=1)
+    rows = analytics.delay_propagation(warehouse, "t9", service_date=yesterday)
 
     assert [r["stop_sequence"] for r in rows] == [0, 1, 2]
     assert {r["arrival_delay"] for r in rows} == {14400}

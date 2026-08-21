@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import datetime as dt
 import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
@@ -31,6 +32,18 @@ MODEL_PATH = Path(__file__).resolve().parent.parent / "models" / "delay_model.jo
 # that shows the same numbers twice. This is the dashboard's heartbeat.
 PUSH_INTERVAL_SECONDS = 10
 
+# The map draws every tracked train. Overnight services from a previous service
+# date stay live, so this sits above the ~500 running at a weekday peak; the
+# dashboard reports the real count separately so a cap can never masquerade as a
+# measurement.
+POSITION_LIMIT = 1200
+
+# Bounded and long-lived on purpose. Warehouse hands each thread its own
+# connection, so a fresh pool per request would open a new set every time and
+# never give them back: that exhausted PostgreSQL's 100-client limit within a
+# few refreshes. Reusing the threads reuses their connections.
+PAYLOAD_WORKERS = 6
+
 
 def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or Settings.from_env()
@@ -38,7 +51,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # ponytail: one shared autocommit connection. Fine for a single-process
     # dashboard; swap for a psycopg2 ThreadedConnectionPool if this ever fans
     # out to multiple workers.
-    state: dict[str, Any] = {"warehouse": None, "model": None}
+    state: dict[str, Any] = {"warehouse": None, "model": None, "pool": None}
+
+    def pool() -> ThreadPoolExecutor:
+        if state["pool"] is None:
+            state["pool"] = ThreadPoolExecutor(
+                max_workers=PAYLOAD_WORKERS, thread_name_prefix="payload"
+            )
+        return state["pool"]
 
     def warehouse() -> Warehouse:
         if state["warehouse"] is None:
@@ -55,6 +75,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             except Exception as exc:  # noqa: BLE001 - a stale model must not block the API
                 log.warning("could not load delay model: %s", exc)
         yield
+        if state["pool"] is not None:
+            state["pool"].shutdown(wait=False)
         if state["warehouse"] is not None:
             state["warehouse"].close()
 
@@ -94,7 +116,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def dashboard() -> dict:
         """The same payload the WebSocket pushes, for first paint and for
         clients where WebSockets are unavailable."""
-        return _dashboard_payload(warehouse(), settings)
+        return _dashboard_payload(warehouse(), settings, pool())
 
     @app.get("/api/cancellations")
     def cancellations(hours: int = Query(24, ge=1, le=168)) -> dict:
@@ -124,8 +146,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return analytics.worst_trips(warehouse(), limit=limit, hours=hours)
 
     @app.get("/api/trips/{trip_id}/propagation")
-    def propagation(trip_id: str) -> list[dict]:
-        rows = analytics.delay_propagation(warehouse(), trip_id=trip_id)
+    def propagation(trip_id: str, service_date: str | None = Query(None, description="YYYY-MM-DD; defaults to the newest run")) -> list[dict]:
+        parsed = None
+        if service_date:
+            try:
+                parsed = dt.date.fromisoformat(service_date)
+            except ValueError:
+                raise HTTPException(status_code=422, detail=f"not a date: {service_date}") from None
+        rows = analytics.delay_propagation(warehouse(), trip_id=trip_id, service_date=parsed)
         if not rows:
             raise HTTPException(status_code=404, detail=f"no observations for trip {trip_id}")
         return rows
@@ -171,7 +199,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         await ws.accept()
         try:
             while True:
-                payload = await asyncio.to_thread(_dashboard_payload, warehouse(), settings)
+                payload = await asyncio.to_thread(_dashboard_payload, warehouse(), settings, pool())
                 await ws.send_json(payload)
                 await asyncio.sleep(PUSH_INTERVAL_SECONDS)
         except WebSocketDisconnect:
@@ -227,20 +255,45 @@ def _summary(warehouse: Warehouse, settings: Settings, hours: int = 24) -> dict:
     }
 
 
-def _dashboard_payload(warehouse: Warehouse, settings: Settings) -> dict:
-    """Everything the dashboard renders, in one round trip."""
-    return {
-        "generated_at": dt.datetime.now(tz=dt.timezone.utc).isoformat(),
-        "summary": _summary(warehouse, settings),
-        "timeseries": analytics.delay_timeseries(warehouse, bucket_minutes=5, hours=6),
-        "stations": analytics.station_delays(warehouse, limit=12, min_observations=2),
-        "categories": analytics.category_breakdown(warehouse),
-        "distribution": analytics.delay_distribution(warehouse),
-        "network": analytics.network_snapshot(warehouse, limit=400),
-        "positions": analytics.live_positions(warehouse, limit=600),
-        "history_window": analytics.history_window(warehouse),
-        "polls": analytics.recent_polls(warehouse, limit=60),
-        "cancellations": analytics.cancellations(warehouse),
-        "skipped_stations": analytics.skipped_stations(warehouse, limit=8),
-        "worst_trips": analytics.worst_trips(warehouse, limit=8),
+def _dashboard_payload(
+    warehouse: Warehouse, settings: Settings, pool: ThreadPoolExecutor | None = None
+) -> dict:
+    """Everything the dashboard renders, in one round trip.
+
+    The twelve analytics are independent of each other and every one of them
+    re-derives the same "latest observation per stop" view, so run sequentially
+    they simply add up: measured at 2.1M rows, ~0.9s each for a 7s payload
+    against a 10s push interval.
+
+    They are run concurrently instead. Warehouse is thread-affine, so each
+    worker gets its own connection and PostgreSQL parallelises the work rather
+    than serialising it behind one cursor.
+    """
+    jobs = {
+        "summary": lambda: _summary(warehouse, settings),
+        "timeseries": lambda: analytics.delay_timeseries(warehouse, bucket_minutes=5, hours=6),
+        "stations": lambda: analytics.station_delays(warehouse, limit=12, min_observations=2),
+        "categories": lambda: analytics.category_breakdown(warehouse),
+        "distribution": lambda: analytics.delay_distribution(warehouse),
+        "network": lambda: analytics.network_snapshot(warehouse, limit=400),
+        "positions": lambda: analytics.live_positions(warehouse, limit=POSITION_LIMIT),
+        "history_window": lambda: analytics.history_window(warehouse),
+        "polls": lambda: analytics.recent_polls(warehouse, limit=60),
+        "cancellations": lambda: analytics.cancellations(warehouse),
+        "skipped_stations": lambda: analytics.skipped_stations(warehouse, limit=8),
+        "worst_trips": lambda: analytics.worst_trips(warehouse, limit=8),
     }
+
+    payload: dict[str, Any] = {"generated_at": dt.datetime.now(tz=dt.timezone.utc).isoformat()}
+
+    if pool is None:   # Tests and direct callers: sequential is fine and leaks nothing.
+        for key, fn in jobs.items():
+            payload[key] = fn()
+        payload["positions_capped"] = len(payload["positions"]) >= POSITION_LIMIT
+        return payload
+
+    futures = {pool.submit(fn): key for key, fn in jobs.items()}
+    for future in as_completed(futures):
+        payload[futures[future]] = future.result()
+    payload["positions_capped"] = len(payload["positions"]) >= POSITION_LIMIT
+    return payload

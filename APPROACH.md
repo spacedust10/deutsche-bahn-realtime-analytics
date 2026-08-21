@@ -830,3 +830,91 @@ A metric that can only deliver good news is advertising, not measurement.
 | Basemap data | OpenStreetMap contributors |
 | Colour space | OKLCH, validated for CVD separation and contrast |
 | Feature importance | scikit-learn `permutation_importance` |
+
+---
+
+## 14. Third iteration: the motion audit
+
+A pass over the frontend against Emil Kowalski's design-engineering rules. Most
+findings were the ones that never announce themselves.
+
+### 14.1 Two animation bugs that were not taste calls
+
+**Trains moved at different speeds on different machines.** The map lerps each
+train toward its new position on `requestAnimationFrame` with a fixed per-frame
+factor. That is frame-rate dependent: at 120Hz it runs twice as many steps per
+second as at 60Hz, so the same data animated at two different speeds depending
+on the display. Now normalised against elapsed time.
+
+**The refresh animation was never configured.** ECharts applies
+`animationDuration` to the first render only; every later `setOption` uses
+`animationDurationUpdate`. Only the former was set, so the animation users
+actually see (a refresh every 10s) had been running on library defaults the
+whole time. Both are set now, both under the 300ms ceiling.
+
+### 14.2 Craft details
+
+| Was | Is | Why |
+|---|---|---|
+| `.skip-link` transitions `top` | `transform: translateY()` | Layout properties cannot reach the GPU |
+| Live dot animates `box-shadow` spread | `::after` ring on transform + opacity | It runs forever on an always-visible element; box-shadow repaints every frame |
+| Buttons nudge 1px on press | `scale(0.97)`, transform in the transition | The press has to be felt; without transform in the transition the release snapped |
+| Hover states ungated | `@media (hover: hover) and (pointer: fine)` | Touch fires hover on tap and leaves it stuck |
+| Map popup: instant, centre origin, inline styles | 160ms scale from 0.96, per-anchor origin, in CSS | A popover scales out of its trigger, not its own middle |
+| Reduced motion killed every transition | keeps opacity and colour, drops movement | Reduced motion means gentler, not absent; colour cues never caused motion sickness |
+
+Deliberately not added: a page-load stagger. A dashboard loads into a task, and
+choreographing six tiles on every refresh is decoration the reader pays for
+repeatedly.
+
+### 14.3 What the audit found underneath
+
+Looking closely at the frontend surfaced three defects that had nothing to do
+with motion.
+
+**The map was mostly ghosts.** `live_positions` had no lower time bound, so
+every trip ever collected stayed parked at its terminus. Of 1,200 markers,
+**1,108 were trains from previous service dates** and only 82 were running. The
+window is now bounded on both sides, with a short grace period so a train does
+not blink out the moment it terminates: 1,200 markers became 115 real ones.
+
+**The propagation chart drew a sawtooth.** A `trip_id` repeats every service
+day, and the query ordered by `stop_sequence` alone, interleaving runs: seq 0
+yesterday, seq 0 today, seq 1 yesterday. ICE 50 oscillated between +250 and 0
+minutes. It now traces the newest run, or an explicit date passed from the table
+row, and reads as the genuinely late service it is: 241, 275, 290, 263, ... 259.
+
+**A cap was being displayed as a measurement.** The "trains live" metric read
+`positions.length`, which is a limit, not a count. The API now reports whether
+the list was truncated, and the metric matches its own label.
+
+### 14.4 Latency, again
+
+The payload had drifted from 1.75s back to **7.0s** against a 10s push, because
+all twelve analytics re-derive the same `current_stop_delays` view and ran
+sequentially in one thread. `EXPLAIN` showed the view itself costs only 234ms;
+the problem was paying it twelve times in series.
+
+They now run on a bounded, long-lived worker pool: **7.0s to ~4.0s**.
+
+The first attempt at that pool was a bug worth recording. Creating a
+`ThreadPoolExecutor` per request, with thread-affine connections, opens a fresh
+connection per worker per request and never returns them. PostgreSQL hit its
+100-client limit within a few refreshes and the test suite started skipping with
+`sorry, too many clients already`. One pool for the process lifetime fixes it:
+reused threads mean reused connections.
+
+The remaining ~4s is still twelve queries deriving the same view. The real fix
+is a materialised view refreshed by the collector, which would also need every
+seeding test to refresh it; that is left as the next step rather than rushed.
+
+### 14.5 Tests that expire
+
+Fifteen tests failed for a reason unrelated to any change: they seeded fixtures
+at a hardcoded `2026-08-18` while every analytic filters on `now() - interval`.
+They passed on the day they were written and silently began returning nothing
+once that date rolled out of the 24-hour window.
+
+Fixtures are now anchored to `now()`. The tests were always about relative
+recency; the calendar date was never the point, and pinning it made them a
+time bomb with a three-day fuse.
