@@ -59,6 +59,27 @@ function bandFor(seconds) {
 
 const severityColor = (seconds) => SEVERITY_COLORS[bandFor(seconds).severity];
 
+/* Time a train loses (or gives back) between two stations, in seconds. This is
+   a different measurement from how late a train *is*, so it gets its own
+   diverging scale rather than borrowing the delay bands: zero here means the
+   timetable held, not that the train is on time. One definition, read by both
+   the map's paint expression and the legend, so they cannot drift. */
+const SEGMENT_STEPS = [
+  { upto: -60,  color: C.d0,      label: 'Recovers 1 min or more' },
+  { upto: 60,   color: '#55677f', label: 'Holds its time' },
+  { upto: 180,  color: C.d1,      label: 'Loses 1-3 min' },
+  { upto: 360,  color: C.d2,      label: 'Loses 3-6 min' },
+  { upto: null, color: C.d3,      label: 'Loses 6 min or more' },
+];
+
+function segmentColorExpression() {
+  const expr = ['step', ['get', 'delta_seconds'], SEGMENT_STEPS[0].color];
+  for (let i = 0; i < SEGMENT_STEPS.length - 1; i += 1) {
+    expr.push(SEGMENT_STEPS[i].upto, SEGMENT_STEPS[i + 1].color);
+  }
+  return expr;
+}
+
 const CATEGORY_COLOR = { ICE: C.ice, IC: C.ic, EC: C.ec, ECE: C.ece };
 const categoryColor = (name) => CATEGORY_COLOR[name] || C.oth;
 
@@ -113,10 +134,20 @@ const MOTION = {
   animationEasingUpdate: 'quinticOut',
 };
 
-const AXIS_LABEL = { color: C.muted, fontSize: 10.5 };
+/* Mirrors --mono in styles.css. Every number the page draws is set in it, so
+   digits share a width and a column of values reads as a column instead of
+   jittering as the data updates. */
+const MONO = 'SF Mono, JetBrains Mono, ui-monospace, Menlo, Consolas, monospace';
+
+const AXIS_LABEL = { color: C.muted, fontSize: 10, fontFamily: MONO };
+const SERIES_LABEL = { color: C.ink2, fontSize: 10, fontFamily: MONO };
+const LEGEND = {
+  top: 0, right: 0, itemWidth: 10, itemHeight: 2, icon: 'rect',
+  textStyle: { color: C.ink2, fontSize: 10, fontFamily: MONO },
+};
 const SPLIT_LINE = { lineStyle: { color: C.line, width: 1 } };   // hairline, never dashed
 
-const baseGrid = (over = {}) => ({ left: 46, right: 16, top: 26, bottom: 26, containLabel: true, ...over });
+const baseGrid = (over = {}) => ({ left: 40, right: 14, top: 22, bottom: 22, containLabel: true, ...over });
 
 const baseTooltip = (extra = {}) => ({
   trigger: 'axis',
@@ -124,7 +155,7 @@ const baseTooltip = (extra = {}) => ({
   borderColor: C.line,
   borderWidth: 1,
   padding: [8, 11],
-  textStyle: { color: C.ink, fontSize: 11.5 },
+  textStyle: { color: C.ink, fontSize: 11, fontFamily: MONO },
   axisPointer: { type: 'line', lineStyle: { color: C.muted, width: 1 } },
   ...extra,
 });
@@ -140,7 +171,7 @@ const timeAxis = () => ({
 const valueAxis = (name, over = {}) => ({
   type: 'value',
   name,
-  nameTextStyle: { color: C.muted, fontSize: 10, padding: [0, 0, 0, -30] },
+  nameTextStyle: { color: C.muted, fontSize: 9.5, fontFamily: MONO, padding: [0, 0, 0, -30] },
   axisLabel: AXIS_LABEL,
   axisLine: { show: false },
   axisTick: { show: false },
@@ -199,8 +230,7 @@ function sparkline(id, values, color) {
     series: [{
       type: 'line', data: values, showSymbol: false, smooth: 0.3,
       lineStyle: { width: 1.5, color },
-      areaStyle: { color: { type: 'linear', x: 0, y: 0, x2: 0, y2: 1, colorStops: [
-        { offset: 0, color: `${color}2e` }, { offset: 1, color: `${color}00` }] } },
+      areaStyle: { color: `${color}12` },
     }],
   });
 }
@@ -223,10 +253,7 @@ function renderTimeseries(rows) {
   instance.setOption({
     ...MOTION,
     tooltip: baseTooltip({ valueFormatter: (v) => `${fmt(v)} min` }),
-    legend: {
-      data: ['Mean delay', '90th percentile'], top: 0, right: 0,
-      textStyle: { color: C.ink2, fontSize: 11 }, itemWidth: 14, itemHeight: 2, icon: 'rect',
-    },
+    legend: { ...LEGEND, data: ['Mean delay', '90th percentile'] },
     grid: baseGrid({ top: 34 }),
     xAxis: timeAxis(),
     yAxis: valueAxis('min'),
@@ -234,11 +261,10 @@ function renderTimeseries(rows) {
       { name: '90th percentile', type: 'line', data: p90, showSymbol: false, smooth: 0.25,
         // itemStyle drives the legend swatch; lineStyle alone leaves the legend
         // showing ECharts' default palette and disagreeing with the line.
-        itemStyle: { color: C.d2 }, lineStyle: { width: 2, color: C.d2 },
-        areaStyle: { color: { type: 'linear', x: 0, y: 0, x2: 0, y2: 1, colorStops: [
-          { offset: 0, color: `${C.d2}30` }, { offset: 1, color: `${C.d2}00` }] } } },
+        itemStyle: { color: C.d2 }, lineStyle: { width: 1.6, color: C.d2 },
+        areaStyle: { color: `${C.d2}12` } },
       { name: 'Mean delay', type: 'line', data: mean, showSymbol: false, smooth: 0.25,
-        itemStyle: { color: C.ice }, lineStyle: { width: 2, color: C.ice } },
+        itemStyle: { color: C.ice }, lineStyle: { width: 1.6, color: C.ice } },
     ],
   });
 
@@ -272,9 +298,8 @@ function renderPunctuality(rows) {
     yAxis: valueAxis('%', { max: 100, min: (v) => Math.max(0, Math.floor(v.min - 5)) }),
     series: [{
       name: 'Punctuality', type: 'line', data, showSymbol: false, smooth: 0.25,
-      lineStyle: { width: 2, color: C.ok },
-      areaStyle: { color: { type: 'linear', x: 0, y: 0, x2: 0, y2: 1, colorStops: [
-        { offset: 0, color: `${C.ok}33` }, { offset: 1, color: `${C.ok}00` }] } },
+      lineStyle: { width: 1.6, color: C.ok },
+      areaStyle: { color: `${C.ok}12` },
       markLine: {
         silent: true, symbol: 'none',
         label: { formatter: 'DB target 80%', color: C.muted, fontSize: 10, position: 'insideEndTop' },
@@ -315,7 +340,7 @@ function renderDistribution(rows) {
       type: 'bar',
       data: ordered.map((r) => ({ value: r.stops, itemStyle: { color: SEVERITY_COLORS[r.severity] } })),
       barMaxWidth: 46,
-      itemStyle: { borderRadius: [4, 4, 0, 0] },   // 4px rounded data-end on the baseline
+      itemStyle: { borderRadius: [1, 1, 0, 0] },   // 4px rounded data-end on the baseline
     }],
   });
 
@@ -346,7 +371,10 @@ function renderStations(rows) {
     xAxis: valueAxis('min'),
     yAxis: {
       type: 'category', data: ordered.map((r) => r.stop_name),
-      axisLabel: { ...AXIS_LABEL, width: 116, overflow: 'truncate' },
+      // interval: 0 — a ranking with unlabelled bars is a ranking of nothing.
+      // ECharts drops every other category label when it thinks they crowd;
+      // on a 375px screen that left half the stations anonymous.
+      axisLabel: { ...AXIS_LABEL, width: 116, overflow: 'truncate', interval: 0 },
       axisLine: { show: false }, axisTick: { show: false },
     },
     series: [{
@@ -354,9 +382,9 @@ function renderStations(rows) {
       // One hue for every bar: length already encodes the value, so hue stays
       // free rather than re-encoding what the reader can already see.
       data: ordered.map((r) => minutes(r.mean_delay_seconds)),
-      itemStyle: { color: C.ice, borderRadius: [0, 4, 4, 0] },
+      itemStyle: { color: C.ice, borderRadius: [0, 1, 1, 0] },
       barMaxWidth: 13,
-      label: { show: true, position: 'right', color: C.ink2, fontSize: 10.5, formatter: (p) => fmt(p.value) },
+      label: { show: true, position: 'right', ...SERIES_LABEL, formatter: (p) => fmt(p.value) },
     }],
   });
 
@@ -380,8 +408,8 @@ function renderCategories(rows) {
     yAxis: valueAxis('min'),
     series: [{
       type: 'bar', barMaxWidth: 52,
-      data: rows.map((r) => ({ value: minutes(r.mean_delay_seconds), itemStyle: { color: categoryColor(r.route_category), borderRadius: [4, 4, 0, 0] } })),
-      label: { show: true, position: 'top', color: C.ink2, fontSize: 10.5, formatter: (p) => fmt(p.value) },
+      data: rows.map((r) => ({ value: minutes(r.mean_delay_seconds), itemStyle: { color: categoryColor(r.route_category), borderRadius: [1, 1, 0, 0] } })),
+      label: { show: true, position: 'top', ...SERIES_LABEL, formatter: (p) => fmt(p.value) },
     }],
   });
 
@@ -389,6 +417,203 @@ function renderCategories(rows) {
   setReading('read-categories', 'good',
     `${sorted[0].route_category} is running worst at ${fmt(minutes(sorted[0].mean_delay_seconds))} min mean delay; ` +
     `${sorted[sorted.length - 1].route_category} is best at ${fmt(minutes(sorted[sorted.length - 1].mean_delay_seconds))} min.`);
+}
+
+function renderOrigination(rows) {
+  if (!rows || !rows.length) {
+    showEmpty('chart-origination', 'Not enough runs yet',
+      'This needs a train observed at two consecutive stops, so it fills in as services progress.');
+    return;
+  }
+  clearEmpty('chart-origination');
+  const instance = chart('chart-origination');
+  if (!instance) return;
+
+  // Ascending: an ECharts category axis draws bottom-up, so the worst offender
+  // ends up on top where the eye lands first.
+  const ordered = [...rows].sort((a, b) => a.created_seconds - b.created_seconds).slice(-10);
+
+  instance.setOption({
+    ...MOTION,
+    tooltip: baseTooltip({ valueFormatter: (v) => `${fmt(Math.abs(v))} min` }),
+    legend: { ...LEGEND, data: ['Created here', 'Recovered here'] },
+    grid: baseGrid({ left: 8, top: 34 }),
+    xAxis: valueAxis('min', { axisLabel: { ...AXIS_LABEL, formatter: (v) => fmt(Math.abs(v), 0) } }),
+    yAxis: {
+      type: 'category', data: ordered.map((r) => r.stop_name),
+      axisLabel: { ...AXIS_LABEL, width: 110, overflow: 'truncate', interval: 0 },
+      axisLine: { show: false }, axisTick: { show: false },
+    },
+    // Both series start at zero and grow in opposite directions, so gained and
+    // given-back time are read against one baseline instead of two charts.
+    series: [
+      { name: 'Created here', type: 'bar', stack: 'delta', barMaxWidth: 13,
+        data: ordered.map((r) => minutes(r.created_seconds)),
+        itemStyle: { color: C.d2, borderRadius: [0, 1, 1, 0] } },
+      { name: 'Recovered here', type: 'bar', stack: 'delta', barMaxWidth: 13,
+        data: ordered.map((r) => -minutes(r.recovered_seconds)),
+        itemStyle: { color: C.d0, borderRadius: [1, 0, 0, 1] } },
+    ],
+  });
+
+  const worst = ordered[ordered.length - 1];
+  const net = minutes(worst.net_seconds);
+  setReading('read-origination', net > 30 ? 'bad' : net > 10 ? 'warn' : 'good',
+    `${worst.stop_name} creates the most delay in this window: ${fmt(minutes(worst.created_seconds), 0)} min added ` +
+    `over ${worst.steps} approaches, against ${fmt(minutes(worst.recovered_seconds), 0)} min recovered. ` +
+    `Trains arrive there already ${fmt(minutes(worst.carried_in_seconds))} min late on average, so ` +
+    `${net > 0 ? 'it is adding to a problem it did not start' : 'it is giving time back rather than taking it'}.`);
+}
+
+function renderPareto(rows) {
+  if (!rows || rows.length < 2) {
+    showEmpty('chart-pareto', 'No station totals yet', 'Late minutes accumulate once the collector has stored a few polls.');
+    return;
+  }
+  clearEmpty('chart-pareto');
+  const instance = chart('chart-pareto');
+  if (!instance) return;
+
+  instance.setOption({
+    ...MOTION,
+    tooltip: baseTooltip({
+      formatter: (points) => {
+        const bar = points.find((p) => p.seriesName === 'Late minutes');
+        const line = points.find((p) => p.seriesName === 'Cumulative share');
+        return `${points[0].name}<br/><b>${fmt(bar ? bar.value : 0, 0)} min</b> late<br/>` +
+               `${fmt(line ? line.value : 0)}% of the network total, running`;
+      },
+    }),
+    legend: { ...LEGEND, data: ['Late minutes', 'Cumulative share'] },
+    grid: baseGrid({ left: 8, right: 40, top: 34, bottom: 44 }),
+    xAxis: {
+      type: 'category', data: rows.map((r) => r.stop_name),
+      axisLabel: { ...AXIS_LABEL, rotate: 32, width: 76, overflow: 'truncate', hideOverlap: true },
+      axisLine: { lineStyle: { color: C.line } }, axisTick: { show: false },
+    },
+    // Two units, so two axes. Legitimate here in a way it is not on the delay
+    // chart: the line is a running total *of* the bars, not a second measure
+    // invited to look correlated with them.
+    yAxis: [valueAxis('min'), valueAxis('%', { max: 100, splitLine: { show: false } })],
+    series: [
+      { name: 'Late minutes', type: 'bar', barMaxWidth: 26,
+        data: rows.map((r) => minutes(r.delay_seconds)),
+        itemStyle: { color: C.ice, borderRadius: [1, 1, 0, 0] } },
+      { name: 'Cumulative share', type: 'line', yAxisIndex: 1, smooth: 0.2, symbolSize: 6,
+        data: rows.map((r) => r.cumulative_pct),
+        itemStyle: { color: C.ece }, lineStyle: { width: 1.6, color: C.ece } },
+    ],
+  });
+
+  const top = rows[rows.length - 1];
+  setReading('read-pareto', top.cumulative_pct > 60 ? 'warn' : 'good',
+    `These ${rows.length} stations carry ${fmt(top.cumulative_pct)}% of every late minute on the network. ` +
+    `${rows[0].stop_name} alone accounts for ${fmt(rows[0].share_pct)}% across ${rows[0].calls} calls, ` +
+    `so that is where a fix has the most to work with.`);
+}
+
+function renderTails(rows) {
+  rows = (rows || []).filter((r) => r.p90_delay_seconds !== undefined && r.p90_delay_seconds !== null);
+  if (!rows.length) {
+    showEmpty('chart-tails', 'No station data yet', 'Percentiles need a handful of calls per station.');
+    return;
+  }
+  clearEmpty('chart-tails');
+  const instance = chart('chart-tails');
+  if (!instance) return;
+
+  const ordered = [...rows].sort((a, b) => a.p90_delay_seconds - b.p90_delay_seconds).slice(-9);
+
+  instance.setOption({
+    ...MOTION,
+    tooltip: baseTooltip({ valueFormatter: (v) => `${fmt(v)} min` }),
+    legend: { ...LEGEND, data: ['Median call', 'Worst call in ten'] },
+    grid: baseGrid({ left: 8, right: 34, top: 34 }),
+    xAxis: valueAxis('min'),
+    yAxis: {
+      type: 'category', data: ordered.map((r) => r.stop_name),
+      axisLabel: { ...AXIS_LABEL, width: 110, overflow: 'truncate', interval: 0 },
+      axisLine: { show: false }, axisTick: { show: false },
+    },
+    series: [
+      { name: 'Median call', type: 'bar', barMaxWidth: 9, barGap: '10%',
+        data: ordered.map((r) => minutes(r.p50_delay_seconds)),
+        itemStyle: { color: C.ice, borderRadius: [0, 1, 1, 0] } },
+      { name: 'Worst call in ten', type: 'bar', barMaxWidth: 9,
+        data: ordered.map((r) => minutes(r.p90_delay_seconds)),
+        itemStyle: { color: C.d2, borderRadius: [0, 1, 1, 0] } },
+    ],
+  });
+
+  const worst = ordered[ordered.length - 1];
+  const gap = minutes(worst.p90_delay_seconds - worst.p50_delay_seconds);
+  setReading('read-tails', gap > 15 ? 'bad' : gap > 6 ? 'warn' : 'good',
+    `At ${worst.stop_name} the median call runs ${fmt(minutes(worst.p50_delay_seconds))} min late, but one in ten is ` +
+    `${fmt(minutes(worst.p90_delay_seconds))} min or worse. ` +
+    `${gap > 6 ? `That ${fmt(gap)}-minute spread is what breaks connections there, not the average.`
+               : 'The station is consistent, so the average describes it fairly.'}`);
+}
+
+const WEEKDAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+
+function renderHeatmap(rows) {
+  if (!rows || rows.length < 4) {
+    showEmpty('chart-heatmap', 'Not enough history yet',
+      'A weekly pattern needs days of collection, not minutes. This fills in as the collector runs.');
+    return;
+  }
+  clearEmpty('chart-heatmap');
+  const instance = chart('chart-heatmap');
+  if (!instance) return;
+
+  // ECharts draws a category y-axis bottom-up, so the weekdays are reversed to
+  // put Monday at the top where a reader looks for it.
+  const yLabels = [...WEEKDAYS].reverse();
+  const data = rows.map((r) => [r.hour, yLabels.indexOf(WEEKDAYS[r.dow - 1]), r.punctuality_pct, r.calls, r.mean_delay_seconds]);
+  const floor = Math.min(...rows.map((r) => r.punctuality_pct));
+
+  instance.setOption({
+    ...MOTION,
+    tooltip: baseTooltip({
+      trigger: 'item',
+      formatter: (p) => `${yLabels[p.value[1]]} ${String(p.value[0]).padStart(2, '0')}:00<br/>` +
+        `<b>${fmt(p.value[2])}%</b> punctual · ${p.value[3].toLocaleString()} calls<br/>` +
+        `${fmt(minutes(p.value[4]))} min mean delay`,
+    }),
+    grid: { left: 46, right: 18, top: 10, bottom: 58, containLabel: true },
+    xAxis: {
+      type: 'category', data: [...Array(24).keys()],
+      axisLabel: { ...AXIS_LABEL, interval: 1, formatter: (v) => String(v).padStart(2, '0') },
+      axisLine: { lineStyle: { color: C.line } }, axisTick: { show: false }, splitArea: { show: false },
+    },
+    yAxis: {
+      type: 'category', data: yLabels,
+      axisLabel: AXIS_LABEL, axisLine: { show: false }, axisTick: { show: false },
+    },
+    // The same severity ramp as everywhere else, read in reverse: high
+    // punctuality is the good end, so it takes the colour the map gives a
+    // punctual train.
+    visualMap: {
+      min: Math.max(0, Math.floor(floor)), max: 100, calculable: false,
+      orient: 'horizontal', left: 'center', bottom: 4, itemWidth: 11, itemHeight: 90,
+      textStyle: { color: C.muted, fontSize: 9.5, fontFamily: MONO },
+      text: ['PUNCTUAL', 'LATE'],
+      inRange: { color: [C.d3, C.d2, C.d1, C.d0] },
+    },
+    series: [{
+      type: 'heatmap', data,
+      itemStyle: { borderColor: C.panel, borderWidth: 1, borderRadius: 2 },
+      emphasis: { itemStyle: { borderColor: C.ink, borderWidth: 1 } },
+    }],
+  });
+
+  const worst = rows.reduce((a, b) => (a.punctuality_pct < b.punctuality_pct ? a : b));
+  const busiest = rows.reduce((a, b) => (a.calls > b.calls ? a : b));
+  setReading('read-heatmap', worst.punctuality_pct < 60 ? 'warn' : 'good',
+    `The weakest hour observed so far is ${WEEKDAYS[worst.dow - 1]} ${String(worst.hour).padStart(2, '0')}:00 at ` +
+    `${fmt(worst.punctuality_pct)}% punctual over ${worst.calls.toLocaleString()} calls. ` +
+    `The busiest is ${WEEKDAYS[busiest.dow - 1]} ${String(busiest.hour).padStart(2, '0')}:00 with ` +
+    `${busiest.calls.toLocaleString()} calls at ${fmt(busiest.punctuality_pct)}%.`);
 }
 
 /* The API reports arrival and departure delay separately and leaves both null
@@ -419,10 +644,9 @@ function renderPropagation(rows, label) {
     series: [{
       type: 'line', data: rows.map((r) => minutes(callDelay(r))),
       smooth: 0.2, symbolSize: 8,
-      lineStyle: { width: 2.5, color: C.d2 },
+      lineStyle: { width: 2, color: C.d2 },
       itemStyle: { color: C.d2, borderColor: C.panel, borderWidth: 2 },
-      areaStyle: { color: { type: 'linear', x: 0, y: 0, x2: 0, y2: 1, colorStops: [
-        { offset: 0, color: `${C.d2}30` }, { offset: 1, color: `${C.d2}00` }] } },
+      areaStyle: { color: `${C.d2}12` },
     }],
   });
 
@@ -486,8 +710,8 @@ function renderImportance(model) {
     yAxis: { type: 'category', data: rows.map((r) => r.feature), axisLabel: { ...AXIS_LABEL, width: 120, overflow: 'truncate' }, axisLine: { show: false }, axisTick: { show: false } },
     series: [{
       type: 'bar', data: rows.map((r) => r.importance),
-      itemStyle: { color: C.ec, borderRadius: [0, 4, 4, 0] }, barMaxWidth: 13,
-      label: { show: true, position: 'right', color: C.ink2, fontSize: 10.5, formatter: (p) => `${Math.round(p.value * 100)}%` },
+      itemStyle: { color: C.ec, borderRadius: [0, 1, 1, 0] }, barMaxWidth: 13,
+      label: { show: true, position: 'right', ...SERIES_LABEL, formatter: (p) => `${Math.round(p.value * 100)}%` },
     }],
   });
 
@@ -513,7 +737,7 @@ function renderIngestion(polls) {
   instance.setOption({
     ...MOTION,
     tooltip: baseTooltip(),
-    legend: { data: ['Rows written', 'Fetch duration'], top: 0, right: 0, textStyle: { color: C.ink2, fontSize: 11 }, itemWidth: 14, itemHeight: 2, icon: 'rect' },
+    legend: { ...LEGEND, data: ['Rows written', 'Fetch duration'] },
     grid: baseGrid({ top: 34 }),
     xAxis: timeAxis(),
     // Two measures of different scale, indexed against their own maximum so
@@ -529,7 +753,7 @@ function renderIngestion(polls) {
         // below the chroma floor, so it cannot carry series identity.
         // itemStyle drives the legend swatch, lineStyle the drawn line; both.
         itemStyle: { color: i === 0 ? C.ice : C.ece },
-        lineStyle: { width: 2, color: i === 0 ? C.ice : C.ece },
+        lineStyle: { width: 1.6, color: i === 0 ? C.ice : C.ece },
       };
     }),
   });
@@ -574,7 +798,12 @@ const TrainMap = {
     });
 
     this.map.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'top-left');
-    this.map.on('load', () => this.onLoad());
+    /* `style.load`, not `load`: `load` waits for the first tiles to paint, so a
+       basemap that never answers took the trains down with it and left the
+       panel black. The rail network, the segments and the trains are our own
+       GeoJSON and need only the style parsed; they now draw over bare ground
+       when the tile server is unreachable. */
+    this.map.on('style.load', () => this.onLoad());
     this.map.on('error', (e) => {
       // A tile failure must not take the trains down with it.
       console.warn('map resource failed', e && e.error && e.error.message);
@@ -595,6 +824,7 @@ const TrainMap = {
   },
 
   onLoad() {
+    if (this.ready) return;   // style.load fires again on any later setStyle
     this.ready = true;
     this.tintBasemap();
 
@@ -602,6 +832,19 @@ const TrainMap = {
     this.map.addLayer({
       id: 'rail-line', type: 'line', source: 'rail',
       paint: { 'line-color': '#3a4a63', 'line-width': ['interpolate', ['linear'], ['zoom'], 4, 0.4, 8, 1.4], 'line-opacity': 0.75 },
+    });
+
+    /* Observed links on top of the plain network. Links with too few
+       traversals are never in this source, so they simply keep showing the grey
+       line underneath rather than being coloured on one bad afternoon. */
+    this.map.addSource('segments', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
+    this.map.addLayer({
+      id: 'segment-line', type: 'line', source: 'segments',
+      paint: {
+        'line-color': segmentColorExpression(),
+        'line-width': ['interpolate', ['linear'], ['zoom'], 4, 1.4, 8, 3.6],
+        'line-opacity': 0.85,
+      },
     });
 
     this.map.addSource('stations', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
@@ -632,10 +875,14 @@ const TrainMap = {
     });
 
     this.map.on('click', 'train-dot', (e) => this.showPopup(e));
+    this.map.on('click', 'segment-line', (e) => this.showSegmentPopup(e));
+    this.map.on('mouseenter', 'segment-line', () => { this.map.getCanvas().style.cursor = 'pointer'; });
+    this.map.on('mouseleave', 'segment-line', () => { this.map.getCanvas().style.cursor = ''; });
     this.map.on('mouseenter', 'train-dot', () => { this.map.getCanvas().style.cursor = 'pointer'; });
     this.map.on('mouseleave', 'train-dot', () => { this.map.getCanvas().style.cursor = ''; });
 
     this.loadGeometry();
+    this.loadSegments();
     this.tick();
   },
 
@@ -664,6 +911,31 @@ const TrainMap = {
     } catch (err) {
       console.warn('network geometry unavailable', err);
     }
+  },
+
+  /* Segments move with the data, unlike the network geometry, so they are
+     fetched separately and refreshed on their own timer. */
+  async loadSegments() {
+    if (!this.ready || !this.map.getSource('segments')) return;
+    try {
+      const segments = await fetch('/api/geo/segments').then((r) => r.json());
+      this.map.getSource('segments').setData(segments);
+    } catch (err) {
+      console.warn('segment performance unavailable', err);
+    }
+  },
+
+  showSegmentPopup(e) {
+    const p = e.features[0].properties;
+    const lost = Math.round(p.delta_seconds / 60);
+    const verb = lost > 0 ? `loses ${lost}` : lost < 0 ? `recovers ${-lost}` : 'holds its';
+    new maplibregl.Popup({ closeButton: false, offset: 8, className: 'train-popup' })
+      .setLngLat(e.lngLat)
+      .setHTML(
+        `<div class="popup-title">${p.from} → ${p.to}</div>` +
+        `<div class="popup-route">${p.traversals} traversals in the last 24h</div>` +
+        `<div class="popup-delay">A train ${verb} min here on average</div>`)
+      .addTo(this.map);
   },
 
   setPositions(positions) {
@@ -778,6 +1050,14 @@ function renderLegend() {
         : rangeLabel(bands[0].lower_seconds, bands[bands.length - 1].upper_seconds);
       return `<div class="legend-row"><i style="background:${SEVERITY_COLORS[severity]}"></i>${label}</div>`;
     }).join('');
+}
+
+function renderSegmentLegend() {
+  const host = $('segment-legend');
+  if (!host) return;
+  host.innerHTML = SEGMENT_STEPS
+    .map((step) => `<div class="legend-row"><i style="background:${step.color}"></i>${step.label}</div>`)
+    .join('');
 }
 
 /* --- time slider ---------------------------------------------------------- */
@@ -941,6 +1221,9 @@ function apply(payload) {
   renderDistribution(payload.distribution);
   renderStations(payload.stations);
   renderCategories(payload.categories);
+  renderOrigination(payload.origination);
+  renderPareto(payload.delay_minutes);
+  renderTails(payload.stations);
   renderWorstTrips(payload.worst_trips);
   if (payload.polls) renderIngestion(payload.polls);
 
@@ -966,6 +1249,14 @@ async function loadModel() {
         : 'Delay model: not trained';
     }
   } catch { /* the dashboard is useful without the model */ }
+}
+
+/* A week of history to scan, and an answer that moves in days. Fetched on its
+   own slow timer rather than riding the 10s payload. */
+async function loadHeatmap() {
+  try {
+    renderHeatmap(await fetch('/api/heatmap').then((r) => r.json()));
+  } catch { /* the dashboard is useful without the weekly view */ }
 }
 
 async function loadTrip(tripId, label, serviceDate) {
@@ -1035,14 +1326,18 @@ async function pollOnce() {
   }
 }
 
+const SLOW_REFRESH_MS = 300_000;   // heatmap and segment averages move in hours, not seconds
+
 function boot() {
   renderLegend();
+  renderSegmentLegend();
 
   // Data first, and each optional subsystem isolated. The map used to run
   // before this and threw on browsers without WebGL, which left the whole
   // dashboard showing "connecting" forever.
   pollOnce();                    // First paint without waiting for the socket.
   loadModel();
+  loadHeatmap();
 
   if ('WebSocket' in window) connect();
   else setInterval(pollOnce, PUSH_MS);
@@ -1061,6 +1356,8 @@ function boot() {
   }
 
   setInterval(loadModel, 60_000);
+  setInterval(loadHeatmap, SLOW_REFRESH_MS);
+  setInterval(() => TrainMap.loadSegments(), SLOW_REFRESH_MS);
   // Data age keeps counting between pushes so a stalled feed is visible.
   setInterval(() => {
     if (lastFeedTimestamp) $('data-age').textContent = relativeAge(lastFeedTimestamp);

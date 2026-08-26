@@ -50,35 +50,35 @@
 
 <section class="metrics" aria-label="Network summary">
   <article class="metric">
-    <span class="metric-label">Punctuality</span>
+    <span class="metric-label">Punctuality<span class="win">24 H</span></span>
     <span class="metric-value"><span data-counter="punctuality" data-decimals="1">—</span><em>%</em></span>
     <span class="metric-note" data-threshold-min="stops under {n} min late (DB definition)">stops under 6 min late (DB definition)</span>
     <div class="metric-spark" id="spark-punctuality"></div>
   </article>
   <article class="metric">
-    <span class="metric-label">Mean delay</span>
+    <span class="metric-label">Mean delay<span class="win">24 H</span></span>
     <span class="metric-value"><span data-counter="meandelay" data-decimals="1">—</span><em>min</em></span>
     <span class="metric-note">across every tracked call</span>
     <div class="metric-spark" id="spark-delay"></div>
   </article>
   <article class="metric">
-    <span class="metric-label">Trains live</span>
+    <span class="metric-label">Trains live<span class="win">NOW</span></span>
     <span class="metric-value"><span data-counter="trips">—</span></span>
     <span class="metric-note" id="trips-note">long-distance services running now</span>
     <div class="metric-spark" id="spark-trips"></div>
   </article>
   <article class="metric">
-    <span class="metric-label">Worst delay</span>
+    <span class="metric-label">Worst delay<span class="win">24 H</span></span>
     <span class="metric-value"><span data-counter="maxdelay">—</span><em>min</em></span>
     <span class="metric-note">peak anywhere on the network</span>
   </article>
   <article class="metric">
-    <span class="metric-label">Cancelled calls</span>
+    <span class="metric-label">Cancelled calls<span class="win">24 H</span></span>
     <span class="metric-value"><span data-counter="skipped">—</span></span>
     <span class="metric-note">stops skipped today</span>
   </article>
   <article class="metric">
-    <span class="metric-label">Observations</span>
+    <span class="metric-label">Observations<span class="win">TOTAL</span></span>
     <span class="metric-value"><span data-counter="observations">—</span></span>
     <span class="metric-note">stop-time records warehoused</span>
   </article>
@@ -89,20 +89,24 @@
   <!-- ---------------- live map ---------------- -->
   <section class="panel mappanel span-2">
     <div class="panel-head">
-      <h2>Live network</h2>
+      <h2><span class="idx">01</span>Live network<span class="stamp">Live · 12 h track</span></h2>
       <p class="panel-desc">
         Every tracked long-distance train, positioned by interpolating its
         scheduled timetable against the delay the feed reports for it. Grey
         lines are the physical network drawn from the timetable's own stop
-        sequences. Drag the slider to replay the collected history.
+        sequences; coloured ones are links trains have actually run in the last
+        24 hours, shaded by the time they lose or recover along them. Click a
+        link for its figures. Drag the slider to replay the collected history.
       </p>
     </div>
 
     <div id="map" role="application" aria-label="Live map of German long-distance trains"></div>
 
     <div class="map-overlay map-legend">
-      <h3>Delay</h3>
+      <h3>Train delay</h3>
       <div class="legend-scale" id="map-legend"></div>
+      <h3>Time lost per link</h3>
+      <div class="legend-scale" id="segment-legend"></div>
     </div>
     <div class="map-overlay map-count">
       <b id="map-train-count">—</b>
@@ -133,7 +137,7 @@
   <div class="row">
     <section class="panel">
       <div class="panel-head">
-        <h2>Delay over time</h2>
+        <h2><span class="idx">02</span>Delay over time<span class="stamp">6 h · 5-min buckets</span></h2>
         <p class="panel-desc">
           Mean and 90th-percentile delay per 5-minute bucket. Both series share
           one axis and one unit, so the gap between them is the real spread:
@@ -147,7 +151,7 @@
 
     <section class="panel">
       <div class="panel-head">
-        <h2>Punctuality over time</h2>
+        <h2><span class="idx">03</span>Punctuality over time<span class="stamp">6 h · 5-min buckets</span></h2>
         <p class="panel-desc">
           <span data-threshold-min="Share of calls under Deutsche Bahn's {n}-minute threshold, per bucket.">Share of calls under Deutsche Bahn's 6-minute threshold, per bucket.</span>
           Kept on its own axis rather than overlaid on the delay chart, because
@@ -163,7 +167,7 @@
   <div class="row thirds">
     <section class="panel">
       <div class="panel-head">
-        <h2>Delay distribution</h2>
+        <h2><span class="idx">04</span>Delay distribution<span class="stamp">24 h · all calls</span></h2>
         <p class="panel-desc">
           Where every observed call lands, in the bands a passenger actually
           feels. Bars use the same severity scale as the map.
@@ -175,7 +179,7 @@
 
     <section class="panel">
       <div class="panel-head">
-        <h2>Worst stations</h2>
+        <h2><span class="idx">05</span>Worst stations<span class="stamp">24 h · mean, n ≥ 2</span></h2>
         <p class="panel-desc">
           Mean arrival delay by station, minimum two observations. One colour
           throughout: bar length already encodes the value, so hue is free to
@@ -188,7 +192,7 @@
 
     <section class="panel">
       <div class="panel-head">
-        <h2>By train product</h2>
+        <h2><span class="idx">06</span>By train product<span class="stamp">24 h · by product</span></h2>
         <p class="panel-desc">
           Mean delay per product. ICE, IC and EC run different stopping
           patterns and route lengths, so they accumulate delay differently.
@@ -199,11 +203,72 @@
     </section>
   </div>
 
+  <!-- ---------------- where delay is made ---------------- -->
+  <div class="row thirds">
+    <section class="panel">
+      <div class="panel-head">
+        <h2><span class="idx">07</span>Where delay is created<span class="stamp">24 h · per approach</span></h2>
+        <p class="panel-desc">
+          Delay a train picks up on the approach to a station, against delay it
+          gives back there. Mean delay counts trains that were already late 300
+          km earlier; this counts only what changed here, which is the part an
+          intervention at this station could move.
+        </p>
+      </div>
+      <div class="chart" id="chart-origination"></div>
+      <p class="panel-read" id="read-origination"><span class="dot"></span><span>Waiting for data…</span></p>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head">
+        <h2><span class="idx">08</span>Where the minutes are<span class="stamp">24 h · top 12</span></h2>
+        <p class="panel-desc">
+          Total late minutes per station and the running share of the network's
+          lateness they account for. A quiet station with two very late trains
+          outranks a hub on mean delay; on volume it does not.
+        </p>
+      </div>
+      <div class="chart" id="chart-pareto"></div>
+      <p class="panel-read" id="read-pareto"><span class="dot"></span><span>Waiting for data…</span></p>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head">
+        <h2><span class="idx">09</span>Typical call vs bad call<span class="stamp">24 h · p50 / p90</span></h2>
+        <p class="panel-desc">
+          Median against 90th-percentile delay per station. Nobody experiences
+          an average: the gap between these two bars is what a passenger risks
+          when they plan a connection here.
+        </p>
+      </div>
+      <div class="chart" id="chart-tails"></div>
+      <p class="panel-read" id="read-tails"><span class="dot"></span><span>Waiting for data…</span></p>
+    </section>
+  </div>
+
+  <!-- ---------------- weekly rhythm ---------------- -->
+  <div class="row">
+    <section class="panel">
+      <div class="panel-head">
+        <h2><span class="idx">10</span>When the network fails<span class="stamp">7 d · Europe/Berlin</span></h2>
+        <p class="panel-desc">
+          <span data-threshold-min="Share of calls under the {n}-minute threshold, by weekday and hour of the local clock.">Share of calls under the 6-minute threshold, by weekday and hour of the local clock.</span>
+          Bucketed in Europe/Berlin rather than UTC, because the decisions this
+          informs — crew, stock, recovery time in the timetable — are made
+          against the clock the timetable is written in. Blank cells are hours
+          the collector has not observed yet.
+        </p>
+      </div>
+      <div class="chart" id="chart-heatmap"></div>
+      <p class="panel-read" id="read-heatmap"><span class="dot"></span><span>Waiting for data…</span></p>
+    </section>
+  </div>
+
   <!-- ---------------- propagation + worst trips ---------------- -->
   <div class="row">
     <section class="panel">
       <div class="panel-head">
-        <h2>Delay propagation <span class="tag" id="prop-tag" style="color:var(--ink-muted)">pick a service</span></h2>
+        <h2><span class="idx">11</span>Delay propagation <span class="tag" id="prop-tag" style="color:var(--ink-muted)">pick a service</span><span class="stamp">one run · by stop</span></h2>
         <p class="panel-desc">
           How one service accumulates delay along its route, stop by stop. A
           rising line means the delay is compounding; a flat one means the train
@@ -216,7 +281,7 @@
 
     <section class="panel">
       <div class="panel-head">
-        <h2>Most delayed services</h2>
+        <h2><span class="idx">12</span>Most delayed services<span class="stamp">24 h · top 8</span></h2>
         <p class="panel-desc">Worst current delay per service. Select a row to trace it on the left.</p>
       </div>
       <div class="tablewrap">
@@ -234,7 +299,7 @@
   <div class="row">
     <section class="panel">
       <div class="panel-head">
-        <h2>Delay model · feature importance</h2>
+        <h2><span class="idx">13</span>Delay model · feature importance<span class="stamp">cross-validated</span></h2>
         <p class="panel-desc">
           What the gradient-boosting model actually leans on when predicting a
           service's delay at its next stop. Trained on the warehoused history,
@@ -247,7 +312,7 @@
 
     <section class="panel">
       <div class="panel-head">
-        <h2>Ingestion health</h2>
+        <h2><span class="idx">14</span>Ingestion health<span class="stamp">last 60 polls</span></h2>
         <p class="panel-desc">
           Rows written and fetch duration per poll. Flat-lining rows with
           healthy durations means the feed republished unchanged data. The
