@@ -311,3 +311,164 @@ def test_propagation_honours_an_explicit_service_date(warehouse):
 
 def test_propagation_of_an_unknown_trip_is_empty(warehouse):
     assert analytics.delay_propagation(warehouse, "no-such-trip") == []
+
+
+# --- where delay is made ---------------------------------------------------
+
+def located(warehouse):
+    """Three stations with coordinates, for the segment and station rollups."""
+    with warehouse.conn.cursor() as cur:
+        cur.execute("INSERT INTO stops (stop_id, stop_name, stop_lat, stop_lon) VALUES "
+                    "('S1','Berlin Hbf',52.525,13.369),('S2','Hannover Hbf',52.377,9.741),"
+                    "('S3','Köln Hbf',50.943,6.958)")
+    return warehouse
+
+
+def test_delay_origination_separates_delay_created_here_from_delay_carried_in(warehouse):
+    """A train that is already 10 minutes late and loses one more minute has
+    created one minute of delay here, not eleven."""
+    warehouse.insert_stop_time_updates([
+        rec("A", 0, 0, "S1"), rec("A", 1, 600, "S2"), rec("A", 2, 660, "S3"),
+    ])
+    located(warehouse)
+    rows = {r["stop_name"]: r for r in analytics.delay_origination(warehouse, min_steps=1)}
+
+    assert rows["Köln Hbf"]["created_seconds"] == 60
+    assert rows["Köln Hbf"]["carried_in_seconds"] == 600
+    # The first stop of a run has nothing before it, so it originates nothing.
+    assert "Berlin Hbf" not in rows
+
+
+def test_delay_origination_counts_recovered_time_separately(warehouse):
+    warehouse.insert_stop_time_updates([
+        rec("A", 0, 0, "S1"), rec("A", 1, 600, "S2"), rec("A", 2, 300, "S3"),
+    ])
+    located(warehouse)
+    rows = {r["stop_name"]: r for r in analytics.delay_origination(warehouse, min_steps=1)}
+
+    assert rows["Köln Hbf"]["recovered_seconds"] == 300
+    assert rows["Köln Hbf"]["created_seconds"] == 0
+    assert rows["Köln Hbf"]["net_seconds"] == -300
+
+
+def test_delay_origination_ranks_the_biggest_creator_first(warehouse):
+    warehouse.insert_stop_time_updates([
+        rec("A", 0, 0, "S1"), rec("A", 1, 120, "S2"), rec("A", 2, 900, "S3"),
+    ])
+    located(warehouse)
+    rows = analytics.delay_origination(warehouse, min_steps=1)
+    assert [r["stop_name"] for r in rows] == ["Köln Hbf", "Hannover Hbf"]
+
+
+def test_segment_performance_averages_the_time_lost_on_each_link(warehouse):
+    warehouse.insert_stop_time_updates([
+        rec("A", 0, 0, "S1"), rec("A", 1, 120, "S2"),
+        rec("B", 0, 60, "S1"), rec("B", 1, 300, "S2"),
+    ])
+    located(warehouse)
+    features = analytics.segment_performance(warehouse, min_traversals=1)["features"]
+
+    link = next(f for f in features if f["properties"]["from"] == "Berlin Hbf")
+    assert link["properties"]["to"] == "Hannover Hbf"
+    assert link["properties"]["traversals"] == 2
+    assert link["properties"]["delta_seconds"] == 180   # (120 + 240) / 2
+    assert link["geometry"]["coordinates"] == [[13.369, 52.525], [9.741, 52.377]]
+
+
+def test_segment_performance_drops_links_seen_too_few_times(warehouse):
+    """One train's bad afternoon is not a segment's performance."""
+    warehouse.insert_stop_time_updates([
+        rec("A", 0, 0, "S1"), rec("A", 1, 900, "S2"),
+    ])
+    located(warehouse)
+    assert analytics.segment_performance(warehouse, min_traversals=2)["features"] == []
+    assert analytics.segment_performance(warehouse, min_traversals=1)["features"]
+
+
+def test_punctuality_heatmap_buckets_calls_by_local_hour_and_weekday(warehouse):
+    """Bucketed in Europe/Berlin: the decisions this feeds are made against the
+    clock the timetable is written in, not UTC."""
+    from zoneinfo import ZoneInfo
+
+    when = dt.datetime.now(tz=dt.timezone.utc) - dt.timedelta(days=1)
+    berlin = when.astimezone(ZoneInfo("Europe/Berlin"))
+    warehouse.insert_stop_time_updates([
+        (StopTimeUpdateRecord(
+            trip_id=trip, service_date=when.date(), stop_sequence=0, stop_id="S1",
+            arrival_delay=delay, departure_delay=delay, arrival_time=when, departure_time=when,
+            schedule_relationship="SCHEDULED", trip_schedule_relationship="SCHEDULED", route_id="1",
+         ), BASE, "ICE")
+        for trip, delay in (("A", 60), ("B", 900))
+    ])
+    rows = analytics.punctuality_heatmap(warehouse, days=7)
+
+    assert len(rows) == 1
+    assert rows[0]["dow"] == berlin.isoweekday()
+    assert rows[0]["hour"] == berlin.hour
+    assert rows[0]["calls"] == 2
+    assert rows[0]["punctuality_pct"] == 50.0
+
+
+def test_punctuality_heatmap_counts_each_call_once_however_often_it_was_republished(warehouse):
+    """The feed republishes the same call every poll. Counting every
+    observation would weight a long-tracked train over a briefly seen one."""
+    when = dt.datetime.now(tz=dt.timezone.utc) - dt.timedelta(days=1)
+    warehouse.insert_stop_time_updates([
+        (StopTimeUpdateRecord(
+            trip_id="A", service_date=when.date(), stop_sequence=0, stop_id="S1",
+            arrival_delay=delay, departure_delay=delay, arrival_time=when, departure_time=when,
+            schedule_relationship="SCHEDULED", trip_schedule_relationship="SCHEDULED", route_id="1",
+         ), BASE + dt.timedelta(minutes=offset), "ICE")
+        for delay, offset in ((60, 0), (900, 5))
+    ])
+    rows = analytics.punctuality_heatmap(warehouse, days=7)
+
+    assert rows[0]["calls"] == 1
+    # The newest observation is the one that stands.
+    assert rows[0]["mean_delay_seconds"] == 900.0
+
+
+def test_station_delay_minutes_rank_by_total_late_time_not_by_mean(warehouse):
+    """A hub delaying many trains moderately is a bigger problem than a quiet
+    station with one very late train, and mean delay says the opposite."""
+    warehouse.insert_stop_time_updates([
+        rec("A", 0, 300, "S1"), rec("B", 0, 300, "S1"), rec("C", 0, 300, "S1"),
+        rec("D", 0, 600, "S2"),
+    ])
+    located(warehouse)
+    rows = analytics.station_delay_minutes(warehouse)
+
+    assert [r["stop_name"] for r in rows] == ["Berlin Hbf", "Hannover Hbf"]
+    assert rows[0]["delay_seconds"] == 900
+    assert [r["stop_name"] for r in analytics.station_delays(warehouse, min_observations=1)][0] == "Hannover Hbf"
+
+
+def test_station_delay_minutes_report_a_share_that_runs_to_the_whole_network(warehouse):
+    warehouse.insert_stop_time_updates([
+        rec("A", 0, 300, "S1"), rec("B", 0, 100, "S2"),
+    ])
+    located(warehouse)
+    rows = analytics.station_delay_minutes(warehouse)
+
+    assert rows[0]["share_pct"] == pytest.approx(75.0)
+    assert rows[0]["cumulative_pct"] == pytest.approx(75.0)
+    assert rows[-1]["cumulative_pct"] == pytest.approx(100.0)
+
+
+def test_station_delay_minutes_ignore_early_running(warehouse):
+    """Minutes gained early do not pay back minutes lost late, so an early
+    arrival contributes nothing rather than subtracting."""
+    warehouse.insert_stop_time_updates([rec("A", 0, 300, "S1"), rec("B", 0, -600, "S1")])
+    located(warehouse)
+    assert analytics.station_delay_minutes(warehouse)[0]["delay_seconds"] == 300
+
+
+def test_station_delays_report_the_tail_not_only_the_mean(seeded):
+    """A station whose median call is fine and whose worst are dreadful is a
+    different problem from one that is late all day; the mean hides that."""
+    rows = {r["stop_name"]: r for r in analytics.station_delays(seeded, min_observations=1)}
+    hannover = rows["Hannover Hbf"]
+
+    assert hannover["p50_delay_seconds"] <= hannover["p90_delay_seconds"] <= hannover["p95_delay_seconds"]
+    assert hannover["p50_delay_seconds"] == 120   # delays there are 120, 60, 1200
+    assert hannover["p90_delay_seconds"] == pytest.approx(984.0)

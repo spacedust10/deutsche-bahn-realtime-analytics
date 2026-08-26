@@ -53,10 +53,15 @@ def punctuality(warehouse, hours: int = 24) -> dict[str, Any]:
 
 
 def station_delays(warehouse, limit: int = 15, min_observations: int = 5, hours: int = 24) -> list[dict]:
-    """Worst stations by mean delay.
+    """Worst stations by mean delay, with the shape of the tail behind it.
 
     `min_observations` exists because ranking a station on one observation
     produces noise: a single very late train would top the chart.
+
+    The percentiles ride along with the mean because a passenger does not
+    experience an average. A station whose median call is on time and whose 95th
+    is half an hour late is a different operational problem from one that runs
+    six minutes late all day, and the mean reports them as the same station.
     """
     # GTFS models every platform as its own stop_id under a parent station, so
     # observations are rolled up to the parent before ranking. Without this a
@@ -69,7 +74,10 @@ def station_delays(warehouse, limit: int = 15, min_observations: int = 5, hours:
                count(*) AS observations,
                avg({_DELAY})::float AS mean_delay,
                max({_DELAY}) AS max_delay,
-               100.0 * count(*) FILTER (WHERE {_DELAY} < %s) / count(*) AS punctuality
+               100.0 * count(*) FILTER (WHERE {_DELAY} < %s) / count(*) AS punctuality,
+               percentile_cont(0.5)  WITHIN GROUP (ORDER BY {_DELAY})::float AS p50,
+               percentile_cont(0.9)  WITHIN GROUP (ORDER BY {_DELAY})::float AS p90,
+               percentile_cont(0.95) WITHIN GROUP (ORDER BY {_DELAY})::float AS p95
         FROM   current_stop_delays d
         LEFT   JOIN stops s ON s.stop_id = d.stop_id
         WHERE  {_DELAY} IS NOT NULL
@@ -86,6 +94,8 @@ def station_delays(warehouse, limit: int = 15, min_observations: int = 5, hours:
             "stop_name": r[0], "stop_id": r[1], "stop_lat": r[2], "stop_lon": r[3],
             "observations": r[4], "mean_delay_seconds": round(r[5], 1),
             "max_delay_seconds": r[6], "punctuality_pct": round(float(r[7]), 1),
+            "p50_delay_seconds": round(r[8], 1), "p90_delay_seconds": round(r[9], 1),
+            "p95_delay_seconds": round(r[10], 1),
         }
         for r in rows
     ]
@@ -596,4 +606,200 @@ def recent_polls(warehouse, limit: int = 60) -> list[dict]:
             "error": r[5],
         }
         for r in reversed(rows)   # newest-first from SQL, oldest-first for plotting
+    ]
+
+
+# ---------------------------------------------------------------------------
+# Where delay is made, and when
+#
+# The analytics above answer "how late is the network". These answer the
+# questions a control room asks next: which stations *create* delay rather than
+# inherit it, which segments give time back, when the network fails, and where
+# the delay minutes actually pile up. Each one is a step-difference along a
+# single run, so they all share the same window: consecutive calls of one trip
+# on one service date, latest observation per call.
+# ---------------------------------------------------------------------------
+
+# Delay change between consecutive calls of one run. Positive means the train
+# lost time approaching this stop, negative means it recovered some.
+_STEP_WINDOW = "PARTITION BY d.trip_id, d.service_date ORDER BY d.stop_sequence"
+_STEP_DELTA = f"{_DELAY} - LAG({_DELAY}) OVER (%s)" % _STEP_WINDOW
+
+
+def delay_origination(warehouse, limit: int = 12, min_steps: int = 5, hours: int = 24) -> list[dict]:
+    """Stations ranked by the delay they create, not the delay they receive.
+
+    Mean delay per station counts every train that shows up late, including one
+    that lost its time 300 km earlier: that is knock-on delay and says nothing
+    about the station. The change between consecutive calls of the same run
+    does. Time lost on the approach is attributed to the station being
+    approached, which is where the measurement is taken and where an
+    intervention would be made.
+    """
+    rows = warehouse.fetchall(
+        f"""
+        WITH steps AS (
+            SELECT COALESCE(s.parent_station, d.stop_id) AS station_id,
+                   COALESCE(s.stop_name, d.stop_id) AS stop_name,
+                   {_STEP_DELTA} AS delta,
+                   LAG({_DELAY}) OVER ({_STEP_WINDOW}) AS carried_in
+            FROM   current_stop_delays d
+            LEFT   JOIN stops s ON s.stop_id = d.stop_id
+            WHERE  {_DELAY} IS NOT NULL
+              AND  d.feed_timestamp > now() - make_interval(hours => %s)
+        )
+        SELECT station_id, min(stop_name) AS stop_name, count(*) AS steps,
+               sum(GREATEST(delta, 0))::float AS created,
+               -sum(LEAST(delta, 0))::float AS recovered,
+               avg(GREATEST(carried_in, 0))::float AS carried_in
+        FROM   steps
+        WHERE  delta IS NOT NULL
+        GROUP  BY station_id
+        HAVING count(*) >= %s
+        ORDER  BY created DESC
+        LIMIT  %s
+        """,
+        (hours, min_steps, limit),
+    )
+    return [
+        {
+            "station_id": r[0], "stop_name": r[1], "steps": r[2],
+            "created_seconds": round(r[3], 1), "recovered_seconds": round(r[4], 1),
+            "net_seconds": round(r[3] - r[4], 1),
+            "carried_in_seconds": round(r[5], 1) if r[5] is not None else 0.0,
+        }
+        for r in rows
+    ]
+
+
+def segment_performance(warehouse, min_traversals: int = 3, hours: int = 24) -> dict[str, Any]:
+    """Every observed station-to-station link as GeoJSON, carrying the mean
+    time trains lose or recover along it.
+
+    Same step difference as `delay_origination`, paired to the link it happened
+    on instead of the station it ended at, so the map can show where the
+    timetable's padding is working and where it is being eaten. Links seen fewer
+    than `min_traversals` times are dropped rather than drawn on one train's bad
+    afternoon; the plain network geometry still shows them uncoloured.
+    """
+    rows = warehouse.fetchall(
+        f"""
+        WITH steps AS (
+            SELECT d.stop_id AS to_id,
+                   LAG(d.stop_id) OVER ({_STEP_WINDOW}) AS from_id,
+                   {_STEP_DELTA} AS delta
+            FROM   current_stop_delays d
+            WHERE  {_DELAY} IS NOT NULL
+              AND  d.feed_timestamp > now() - make_interval(hours => %s)
+        )
+        SELECT a.stop_lon, a.stop_lat, b.stop_lon, b.stop_lat,
+               a.stop_name, b.stop_name, count(*) AS traversals, avg(delta)::float AS delta
+        FROM   steps s
+        JOIN   stops a ON a.stop_id = s.from_id
+        JOIN   stops b ON b.stop_id = s.to_id
+        WHERE  s.from_id IS NOT NULL AND s.delta IS NOT NULL
+          AND  a.stop_lat IS NOT NULL AND a.stop_lon IS NOT NULL
+          AND  b.stop_lat IS NOT NULL AND b.stop_lon IS NOT NULL
+        GROUP  BY 1, 2, 3, 4, 5, 6
+        HAVING count(*) >= %s
+        """,
+        (hours, min_traversals),
+    )
+    return {
+        "type": "FeatureCollection",
+        "features": [
+            {
+                "type": "Feature",
+                "properties": {
+                    "from": r[4], "to": r[5], "traversals": r[6],
+                    "delta_seconds": round(r[7], 1),
+                },
+                "geometry": {"type": "LineString", "coordinates": [[r[0], r[1]], [r[2], r[3]]]},
+            }
+            for r in rows
+        ],
+    }
+
+
+def punctuality_heatmap(warehouse, days: int = 7) -> list[dict]:
+    """Punctuality by hour of the day and day of the week.
+
+    Reads the fact table rather than `current_stop_delays`, whose window is
+    deliberately short: a weekly pattern needs a week. One row per call, the
+    last thing the feed said about it.
+
+    Bucketed in Europe/Berlin, not UTC. The question behind this chart is when
+    to add crew, stock or recovery time, and those decisions are made in the
+    local clock the timetable is written in.
+    """
+    rows = warehouse.fetchall(
+        f"""
+        WITH calls AS (
+            SELECT DISTINCT ON (trip_id, service_date, stop_sequence)
+                   COALESCE(arrival_time, departure_time) AT TIME ZONE 'Europe/Berlin' AS local_time,
+                   {_DELAY} AS delay
+            FROM   stop_time_updates
+            WHERE  {_DELAY} IS NOT NULL
+              AND  feed_timestamp > now() - make_interval(days => %s)
+            ORDER  BY trip_id, service_date, stop_sequence, feed_timestamp DESC
+        )
+        SELECT extract(isodow FROM local_time)::int AS dow,
+               extract(hour FROM local_time)::int AS hour,
+               count(*) AS calls,
+               avg(delay)::float AS mean_delay,
+               100.0 * count(*) FILTER (WHERE delay < %s) / count(*) AS punctuality
+        FROM   calls
+        WHERE  local_time IS NOT NULL
+        GROUP  BY 1, 2
+        ORDER  BY 1, 2
+        """,
+        (days, PUNCTUALITY_THRESHOLD_SECONDS),
+    )
+    return [
+        {"dow": r[0], "hour": r[1], "calls": r[2],
+         "mean_delay_seconds": round(r[3], 1), "punctuality_pct": round(float(r[4]), 1)}
+        for r in rows
+    ]
+
+
+def station_delay_minutes(warehouse, limit: int = 12, hours: int = 24) -> list[dict]:
+    """Stations ranked by the delay minutes they carry, with a running share.
+
+    Mean delay ranks a quiet station with two very late trains above a hub that
+    delays two hundred by four minutes each. Total late seconds ranks by the
+    size of the problem instead, and the cumulative share says how much of the
+    network's lateness a fix at the top of this list would even be able to
+    touch. The share is computed across every station, not just the ones
+    returned, so the last row's cumulative figure means what it says.
+    """
+    rows = warehouse.fetchall(
+        f"""
+        WITH totals AS (
+            SELECT COALESCE(s.parent_station, d.stop_id) AS station_id,
+                   min(COALESCE(s.stop_name, d.stop_id)) AS stop_name,
+                   count(*) AS calls,
+                   sum(GREATEST({_DELAY}, 0))::float AS delay_seconds
+            FROM   current_stop_delays d
+            LEFT   JOIN stops s ON s.stop_id = d.stop_id
+            WHERE  {_DELAY} IS NOT NULL
+              AND  d.feed_timestamp > now() - make_interval(hours => %s)
+            GROUP  BY 1
+        )
+        SELECT stop_name, station_id, calls, delay_seconds,
+               100.0 * delay_seconds / NULLIF(sum(delay_seconds) OVER (), 0) AS share,
+               100.0 * sum(delay_seconds) OVER (ORDER BY delay_seconds DESC, station_id
+                                                ROWS UNBOUNDED PRECEDING)
+                     / NULLIF(sum(delay_seconds) OVER (), 0) AS cumulative
+        FROM   totals
+        ORDER  BY delay_seconds DESC, station_id
+        LIMIT  %s
+        """,
+        (hours, limit),
+    )
+    return [
+        {"stop_name": r[0], "station_id": r[1], "calls": r[2],
+         "delay_seconds": round(r[3], 1),
+         "share_pct": round(float(r[4]), 2) if r[4] is not None else 0.0,
+         "cumulative_pct": round(float(r[5]), 2) if r[5] is not None else 0.0}
+        for r in rows
     ]
