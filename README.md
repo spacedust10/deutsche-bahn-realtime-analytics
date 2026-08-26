@@ -44,27 +44,23 @@ that history and pushes it to the browser over a WebSocket.
 pip install -r requirements.txt
 ```
 
-PostgreSQL — use a local instance, or:
-
 ```bash
-docker compose up -d
+make up
 ```
 
-Create the schema, collect, and serve:
+That is the whole stack: PostgreSQL (started in Docker unless one is already
+reachable), the collector in the background, and the dashboard at
+**http://127.0.0.1:8000**. Ctrl-C stops it, `make down` also stops the database,
+and the collector writes to `data/collector.log`.
 
-```bash
-make db && make collect
-```
-
-```bash
-make serve
-```
-
-The dashboard is at **http://127.0.0.1:8000**. Once some history exists:
+Once some history exists:
 
 ```bash
 make train
 ```
+
+The steps also stand alone if you would rather watch them in separate terminals:
+`make db`, `make collect`, `make serve`.
 
 ### Configuration
 

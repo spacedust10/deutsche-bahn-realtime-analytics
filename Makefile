@@ -1,10 +1,17 @@
-.PHONY: help install db collect serve train test test-fast lint clean
+.PHONY: help install up down db collect serve train test test-fast lint clean
 
 help:
 	@grep -E '^[a-z-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-12s\033[0m %s\n", $$1, $$2}'
 
 install:  ## Install Python dependencies
 	python3 -m pip install -r requirements.txt
+
+up:  ## Start everything (postgres, collector, dashboard) — Ctrl-C stops it
+	sh scripts/up.sh
+
+down:  ## Stop the background collector and the postgres container
+	-pkill -f -- "-m dbrt"
+	docker compose down
 
 db:  ## Create the database and apply the schema
 	createdb $${PGDATABASE:-dbrt} 2>/dev/null || true
