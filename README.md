@@ -27,13 +27,17 @@ that history and pushes it to the browser over a WebSocket.
 | **Long-distance scoping** | Joins realtime `trip_id`s against the static timetable to keep only ICE/IC/EC/ECE |
 | **Historical warehouse** | Append-only fact table keyed on the feed timestamp, so replays are free |
 | **Punctuality analysis** | Uses DB's own definition: a stop is punctual under 6 minutes late |
-| **Station analysis** | Ranks stations by mean delay, rolling platforms up to their parent station |
+| **Station analysis** | Ranks stations by mean delay and by P50/P90/P95, rolling platforms up to their parent station |
+| **Delay origination** | Splits each stop-to-stop change into delay created on the approach and delay carried in, so a station is ranked on what it makes rather than what it receives |
+| **Segment performance** | Mean time lost or recovered on every station-to-station link trains actually ran |
+| **Delay concentration** | Total late minutes per station with a cumulative share, computed across the whole network |
+| **Weekly rhythm** | Punctuality by weekday and hour of the local clock, bucketed in Europe/Berlin |
 | **Delay propagation** | Traces how one service accumulates delay stop by stop |
 | **Disruptions** | Reports `SKIPPED` station calls and `CANCELED` services separately |
 | **Delay prediction** | Gradient boosting on the delay *delta*, cross-validated against a persistence baseline |
-| **Live network map** | MapLibre map of the real rail network with trains positioned by interpolating the timetable against observed delay |
+| **Live network map** | MapLibre map of the real rail network with trains positioned by interpolating the timetable against observed delay; observed links are shaded by the time trains lose or recover along them |
 | **Time-travel replay** | A slider replays collected history, using only observations published at or before the chosen instant |
-| **Live dashboard** | Animated time series, distribution, rankings, propagation, ingestion health, model importance |
+| **Live dashboard** | Fourteen numbered panels — time series, distribution, rankings, origination, concentration, tails, weekday heatmap, propagation, ingestion health, model importance — each stamped with the window it measures |
 | **Readable by design** | Every panel states in words what it currently shows, not just what it plots |
 
 ---
@@ -44,27 +48,23 @@ that history and pushes it to the browser over a WebSocket.
 pip install -r requirements.txt
 ```
 
-PostgreSQL — use a local instance, or:
-
 ```bash
-docker compose up -d
+make up
 ```
 
-Create the schema, collect, and serve:
+That is the whole stack: PostgreSQL (started in Docker unless one is already
+reachable), the collector in the background, and the dashboard at
+**http://127.0.0.1:8000**. Ctrl-C stops it, `make down` also stops the database,
+and the collector writes to `data/collector.log`.
 
-```bash
-make db && make collect
-```
-
-```bash
-make serve
-```
-
-The dashboard is at **http://127.0.0.1:8000**. Once some history exists:
+Once some history exists:
 
 ```bash
 make train
 ```
+
+The steps also stand alone if you would rather watch them in separate terminals:
+`make db`, `make collect`, `make serve`.
 
 ### Configuration
 
@@ -171,13 +171,17 @@ GTFS-RT feed  --HTTPS+ETag-->  FeedClient
 | `GET /api/summary` | Punctuality, ingestion state, active source |
 | `GET /api/dashboard` | The full dashboard payload (same shape as the WebSocket) |
 | `GET /api/timeseries?bucket=5&hours=6` | Delay and punctuality per time bucket |
-| `GET /api/stations?limit=15` | Stations ranked by mean delay |
+| `GET /api/stations?limit=15` | Stations ranked by mean delay, with P50/P90/P95 |
+| `GET /api/stations/minutes?limit=12` | Stations by total late minutes, with a cumulative share |
+| `GET /api/origination?min_steps=3` | Delay created at a station versus delay carried in |
+| `GET /api/heatmap?days=7` | Punctuality by weekday and local hour |
 | `GET /api/categories` | Punctuality per ICE / IC / EC / ECE |
 | `GET /api/distribution` | Delay histogram |
 | `GET /api/network` | Last reported station per train |
 | `GET /api/positions?at=` | Interpolated train positions, live or at a past instant |
 | `GET /api/geo/network` | Rail network as GeoJSON LineStrings |
 | `GET /api/geo/stations?min_calls=` | Stations as GeoJSON Points |
+| `GET /api/geo/segments?min_traversals=3` | Observed links as GeoJSON, carrying the time lost on each |
 | `GET /api/history/window` | Span the collected history covers (the slider range) |
 | `GET /api/cancellations` | Skipped stops and cancelled services |
 | `GET /api/trips/worst` | Most delayed services |
@@ -190,7 +194,7 @@ GTFS-RT feed  --HTTPS+ETag-->  FeedClient
 
 ## Tests
 
-Built test-first. 260 tests across unit, database, API and live-feed layers.
+Built test-first. 280 tests across unit, database, API and live-feed layers.
 
 ```bash
 make test
@@ -218,6 +222,10 @@ propagation, route reliability, disruptions, and the model's baseline comparison
 ---
 
 ## Method
+
+[`docs/ops-analytics.md`](docs/ops-analytics.md) is the operator's page: the KPI
+tree the panels serve, the decision each one supports, and what the collected
+data says to build next.
 
 [`APPROACH.md`](APPROACH.md) documents how this was built — how the feed was
 identified and verified, every technology choice and why, the bugs TDD surfaced,

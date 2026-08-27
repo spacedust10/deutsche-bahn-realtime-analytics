@@ -82,6 +82,22 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     app = FastAPI(title="DB Fernverkehr Realtime Analytics", version="0.1.0", lifespan=lifespan)
 
+    # The page, its script and its stylesheet change together, and they only
+    # work together: the markup names the panels, the script fills them. Served
+    # with nothing but an ETag, browsers apply heuristic freshness and reuse a
+    # cached script for hours without asking. That shipped new panels against an
+    # old app.js, which rendered every heading and filled none of them, leaving
+    # four charts blank under "Waiting for data…" while the API was healthy.
+    #
+    # `no-cache` does not disable caching; it requires revalidation, so the
+    # usual answer is still a 304 with no body.
+    @app.middleware("http")
+    async def revalidate_dashboard(request, call_next):
+        response = await call_next(request)
+        if request.url.path == "/" or request.url.path.startswith("/static/"):
+            response.headers["Cache-Control"] = "no-cache"
+        return response
+
     # --- REST --------------------------------------------------------------
 
     @app.get("/api/health")
@@ -111,6 +127,33 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         hours: int = Query(24, ge=1, le=168),
     ) -> list[dict]:
         return analytics.station_delays(warehouse(), limit=limit, min_observations=min_observations, hours=hours)
+
+    @app.get("/api/stations/minutes")
+    def station_minutes(
+        limit: int = Query(12, ge=1, le=100),
+        hours: int = Query(24, ge=1, le=168),
+    ) -> list[dict]:
+        """Stations by the delay minutes they carry, with a cumulative share."""
+        return analytics.station_delay_minutes(warehouse(), limit=limit, hours=hours)
+
+    @app.get("/api/origination")
+    def origination(
+        limit: int = Query(12, ge=1, le=100),
+        min_steps: int = Query(3, ge=1, le=1000),
+        hours: int = Query(24, ge=1, le=168),
+    ) -> list[dict]:
+        """Delay created at a station versus delay it inherited from upstream."""
+        return analytics.delay_origination(warehouse(), limit=limit, min_steps=min_steps, hours=hours)
+
+    @app.get("/api/heatmap")
+    def heatmap(days: int = Query(7, ge=1, le=90)) -> list[dict]:
+        """Punctuality by local hour and weekday.
+
+        Not part of the WebSocket payload: it scans days of history to answer a
+        question about weekly rhythm, and pushing it on the feed's 10s heartbeat
+        would spend a second of database time to redraw an unchanged chart.
+        """
+        return analytics.punctuality_heatmap(warehouse(), days=days)
 
     @app.get("/api/dashboard")
     def dashboard() -> dict:
@@ -178,12 +221,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.get("/api/geo/network")
     def geo_network() -> dict:
         """Rail network as GeoJSON. Static between timetable reloads, so the
-        browser is told it may cache it for an hour."""
+        dashboard fetches it once per page load rather than per push."""
         return analytics.network_geometry(warehouse())
 
     @app.get("/api/geo/stations")
     def geo_stations(min_calls: int = Query(1, ge=1, le=500)) -> dict:
         return analytics.station_points(warehouse(), min_calls=min_calls)
+
+    @app.get("/api/geo/segments")
+    def geo_segments(
+        min_traversals: int = Query(3, ge=1, le=500),
+        hours: int = Query(24, ge=1, le=168),
+    ) -> dict:
+        """Observed links as GeoJSON, carrying the time trains lose on each."""
+        return analytics.segment_performance(warehouse(), min_traversals=min_traversals, hours=hours)
 
     @app.get("/api/positions")
     def positions(
@@ -288,7 +339,7 @@ def _dashboard_payload(
 ) -> dict:
     """Everything the dashboard renders, in one round trip.
 
-    The twelve analytics are independent of each other and every one of them
+    The fourteen analytics are independent of each other and every one of them
     re-derives the same "latest observation per stop" view, so run sequentially
     they simply add up: measured at 2.1M rows, ~0.9s each for a 7s payload
     against a 10s push interval.
@@ -310,6 +361,8 @@ def _dashboard_payload(
         "cancellations": lambda: analytics.cancellations(warehouse),
         "skipped_stations": lambda: analytics.skipped_stations(warehouse, limit=8),
         "worst_trips": lambda: analytics.worst_trips(warehouse, limit=8),
+        "origination": lambda: analytics.delay_origination(warehouse, limit=10, min_steps=3),
+        "delay_minutes": lambda: analytics.station_delay_minutes(warehouse, limit=12),
     }
 
     payload: dict[str, Any] = {

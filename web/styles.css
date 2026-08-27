@@ -51,9 +51,23 @@
   /* Identity only. Never encodes a value. */
   --brand: #ec0016;
 
-  --radius: 12px;
+  /* Instrument radius, not card radius. A control room reads as ruled paper:
+     panels butt against hairlines instead of floating as rounded tiles, which
+     is also what lets the density go up without the page turning to mush. */
+  --radius: 3px;
+  --rule: 1px;
+  --pad: 13px;
+  --edge: 18px;
+
   --mono: "SF Mono", "JetBrains Mono", ui-monospace, Menlo, Consolas, monospace;
   --sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+
+  /* One micro-label voice for every field name, unit and stamp on the page.
+     Mono at 9.5px with wide tracking is the register instruments are labelled
+     in, and it is the single strongest signal that these numbers are measured
+     rather than decorative. */
+  --label: 500 9.5px/1.2 var(--mono);
+  --label-track: 0.13em;
 
   /* Product motion: 150-250ms, ease-out. Conveys state, never decorates. */
   --ease: cubic-bezier(0.22, 1, 0.36, 1);
@@ -112,7 +126,10 @@ h1, h2, h3 { text-wrap: balance; font-weight: 600; letter-spacing: -0.01em; }
   border-bottom: 1px solid var(--line);
 }
 
+/* The one place brand red appears: a 2px rule under the wordmark. It marks
+   whose signal box this is and never touches a value. */
 .brand { display: flex; align-items: center; gap: 12px; }
+.brandtext { border-bottom: 2px solid var(--brand); padding-bottom: 5px; }
 .brand svg { display: block; flex: none; }
 
 .brandtext h1 {
@@ -122,22 +139,27 @@ h1, h2, h3 { text-wrap: balance; font-weight: 600; letter-spacing: -0.01em; }
 .brandtext h1 .de { color: var(--ink-muted); font-weight: 450; font-size: 12px; letter-spacing: 0.04em; }
 .brandtext p { font-size: 12px; color: var(--ink-2); }
 
-.topmeta { display: flex; align-items: stretch; gap: 8px; flex-wrap: wrap; }
+/* Field/value pairs divided by hairlines, the way a status board is ruled.
+   Chips would put six boxes inside a box; the rules do the same separating job
+   with no enclosure and leave the values sitting on one baseline. */
+.topmeta { display: flex; align-items: stretch; flex-wrap: wrap; }
 
 .meta-chip {
-  background: var(--panel); border: 1px solid var(--line);
-  border-radius: 9px; padding: 6px 12px;
-  display: flex; flex-direction: column; gap: 2px; min-width: 0;
+  padding: 2px 16px; min-width: 0;
+  display: flex; flex-direction: column; gap: 2px;
+  border-left: var(--rule) solid var(--line-solid);
 }
+.meta-chip:last-child { padding-right: 0; }
 .meta-label {
-  font-size: 9px; letter-spacing: 0.12em; text-transform: uppercase;
+  font: var(--label); letter-spacing: var(--label-track); text-transform: uppercase;
   color: var(--ink-muted); white-space: nowrap;
 }
-.meta-value { font-size: 12.5px; font-weight: 550; white-space: nowrap; }
+.meta-value { font: 550 12.5px var(--mono); white-space: nowrap; }
 .meta-value.mono { font-family: var(--mono); }
 .meta-chip.official .meta-value { color: var(--ok); }
 
 .status { flex-direction: row; align-items: center; gap: 8px; }
+.status .meta-value { font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; }
 .pulse {
   width: 7px; height: 7px; border-radius: 50%; background: var(--ink-muted);
   flex: none; position: relative;
@@ -172,28 +194,45 @@ h1, h2, h3 { text-wrap: balance; font-weight: 600; letter-spacing: -0.01em; }
 @media (max-width: 620px)  { .metrics { grid-template-columns: repeat(2, 1fr); } }
 
 .metric {
-  background: var(--page);
-  padding: 12px 18px 10px;
+  background: var(--panel);
+  padding: 11px var(--edge) 9px;
   display: flex; flex-direction: column; gap: 3px;
   position: relative; min-width: 0;
 }
 .metric-label {
-  font-size: 9.5px; letter-spacing: 0.11em; text-transform: uppercase; color: var(--ink-muted);
+  font: var(--label); letter-spacing: var(--label-track); text-transform: uppercase;
+  color: var(--ink-muted);
+  display: flex; align-items: baseline; justify-content: space-between; gap: 8px;
 }
+/* The window each figure is measured over, stated on the figure rather than
+   left to a caption elsewhere. */
+/* No opacity dimming here: --ink-muted is the darkest ink that still clears
+   4.5:1 on this surface, and fading it to 75% would drop 9.5px text to ~3.6:1. */
+.metric-label .win { color: var(--ink-muted); letter-spacing: 0.06em; }
 .metric-value {
-  font: 600 25px/1.1 var(--mono); letter-spacing: -0.02em;
-  display: flex; align-items: baseline; gap: 3px;
+  font: 500 26px/1.05 var(--mono); letter-spacing: -0.02em;
+  display: flex; align-items: baseline; gap: 4px;
 }
-.metric-value em { font-style: normal; font-size: 12px; color: var(--ink-2); font-weight: 500; }
-.metric-note { font-size: 11px; color: var(--ink-2); }
+.metric-value em {
+  font-style: normal; font: var(--label); letter-spacing: var(--label-track);
+  text-transform: uppercase; color: var(--ink-muted);
+}
+.metric-note { font-size: 10.5px; color: var(--ink-2); }
 .metric-spark { height: 26px; margin-top: 4px; opacity: 0.9; }
 
 /* ---------- layout ---------- */
 
-main { padding: 18px 24px 28px; display: flex; flex-direction: column; gap: 18px; }
+/* The gap IS the rule: a 1px grid gap over a line-coloured background draws
+   every divider once and shares it between neighbours, so no panel needs a
+   border of its own and nothing double-lines. */
+main {
+  display: flex; flex-direction: column; gap: var(--rule);
+  background: var(--line-solid);
+  border-bottom: var(--rule) solid var(--line-solid);
+}
 
 .row {
-  display: grid; gap: 18px;
+  display: grid; gap: var(--rule);
   grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
 }
 .row.thirds { grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); }
@@ -206,42 +245,57 @@ main { padding: 18px 24px 28px; display: flex; flex-direction: column; gap: 18px
 
 .panel {
   background: var(--panel);
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
-  padding: 16px 18px 14px;
+  padding: var(--pad) var(--edge) 11px;
   display: flex; flex-direction: column; min-width: 0;
 }
 .panel.span-2 { grid-column: 1 / -1; }
 
-.panel-head { margin-bottom: 12px; }
-.panel-head h2 { font-size: 14px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.panel-desc { font-size: 11.5px; color: var(--ink-2); margin-top: 3px; max-width: 68ch; }
+.panel-head { margin-bottom: 10px; }
+.panel-head h2 {
+  font-size: 13px; font-weight: 600; letter-spacing: 0.005em;
+  display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap;
+  padding-bottom: 6px; border-bottom: var(--rule) solid var(--line);
+}
+/* Panels are numbered so a reader can cite one: "look at 07" beats "the
+   bar chart on the left, no, the other one". */
+.panel-head h2 .idx {
+  font: var(--label); letter-spacing: var(--label-track);
+  color: var(--ink-muted); flex: none;
+}
+/* Window, unit and grain, stamped on the panel itself. A figure whose window
+   is only stated in a caption somewhere else is a figure people misquote. */
+.panel-head h2 .stamp {
+  margin-left: auto; font: var(--label); letter-spacing: var(--label-track);
+  text-transform: uppercase; color: var(--ink-muted); text-align: right;
+}
+.panel-desc { font-size: 11px; line-height: 1.55; color: var(--ink-2); margin-top: 7px; max-width: 66ch; }
 
 /* The live reading of what the chart currently says — the difference between
-   a chart you look at and a chart you can act on. */
+   a chart you look at and a chart you can act on. Set as a marginal note under
+   a rule: it belongs to the panel, so it is not boxed away from it. */
 .panel-read {
-  font-size: 12px; color: var(--ink); margin-top: 8px;
-  padding: 7px 10px; border-radius: 7px;
-  background: var(--raise);
-  border: 1px solid var(--line);
-  display: flex; align-items: flex-start; gap: 7px;
-  transition: background var(--med) var(--ease);
+  font-size: 11.5px; line-height: 1.5; color: var(--ink); margin-top: auto;
+  padding: 9px 0 0; border-top: var(--rule) solid var(--line);
+  display: flex; align-items: flex-start; gap: 8px;
 }
-.panel-read .dot { width: 6px; height: 6px; border-radius: 50%; margin-top: 5px; flex: none; background: var(--ink-muted); }
+.panel-read .dot {
+  width: 3px; align-self: stretch; border-radius: 0; margin: 1px 0 1px 0; flex: none;
+  background: var(--ink-muted);
+}
 .panel-read.good .dot { background: var(--ok); }
 .panel-read.warn .dot { background: var(--warn); }
 .panel-read.bad  .dot { background: var(--bad); }
 
-.chart { width: 100%; height: 260px; }
-.chart.tall { height: 320px; }
-.chart.short { height: 190px; }
+.chart { width: 100%; height: 232px; }
+.chart.tall { height: 288px; }
+.chart.short { height: 170px; }
 
 /* ---------- map ---------- */
 
 .mappanel { padding: 0; overflow: hidden; position: relative; }
-.mappanel .panel-head { padding: 16px 18px 0; margin-bottom: 10px; }
+.mappanel .panel-head { padding: var(--pad) var(--edge) 0; margin-bottom: 9px; }
 
-#map { width: 100%; height: 560px; background: var(--page); }
+#map { width: 100%; height: 520px; background: var(--page); }
 .maplibregl-canvas:focus { outline: none; }
 
 /* MapLibre's own chrome, restyled to the panel vocabulary. */
@@ -263,27 +317,31 @@ main { padding: 18px 24px 28px; display: flex; flex-direction: column; gap: 18px
   position: absolute; z-index: var(--z-map-ui);
   background: color-mix(in srgb, var(--panel) 92%, transparent);
   backdrop-filter: blur(10px);
-  border: 1px solid var(--line-solid);
-  border-radius: 10px;
+  border: var(--rule) solid var(--line-solid);
+  border-radius: var(--radius);
 }
 
 .map-legend { left: 14px; bottom: 78px; padding: 10px 12px; }
 .map-legend h3 {
-  font-size: 9.5px; letter-spacing: 0.11em; text-transform: uppercase;
-  color: var(--ink-muted); margin-bottom: 7px; font-weight: 500;
+  font: var(--label); letter-spacing: var(--label-track); text-transform: uppercase;
+  color: var(--ink-muted); margin-bottom: 7px;
 }
 .legend-scale { display: flex; flex-direction: column; gap: 4px; }
+/* The legend carries two scales now: train delay and time lost per link. */
+.legend-scale + h3 { margin-top: 10px; }
 .legend-row { display: flex; align-items: center; gap: 8px; font-size: 11px; color: var(--ink-2); }
 .legend-row i {
   width: 22px; height: 8px; border-radius: 2px; flex: none; display: block;
 }
 
+/* Bottom-right, mirroring the legend: the panel heading's stamp owns the top
+   right corner, and an overlay parked there covered it. */
 .map-count {
-  right: 14px; top: 14px; padding: 8px 12px;
+  right: 14px; bottom: 78px; padding: 8px 12px;
   display: flex; flex-direction: column; gap: 1px;
 }
-.map-count b { font: 600 18px/1.1 var(--mono); }
-.map-count span { font-size: 10px; color: var(--ink-muted); letter-spacing: 0.08em; text-transform: uppercase; }
+.map-count b { font: 500 18px/1.1 var(--mono); }
+.map-count span { font: var(--label); letter-spacing: var(--label-track); text-transform: uppercase; color: var(--ink-muted); }
 
 /* ---------- time slider ---------- */
 
@@ -343,11 +401,11 @@ main { padding: 18px 24px 28px; display: flex; flex-direction: column; gap: 18px
 .tablewrap { overflow-x: auto; }
 table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
 thead th {
-  text-align: left; font-size: 9.5px; letter-spacing: 0.11em; text-transform: uppercase;
-  color: var(--ink-muted); font-weight: 500; padding: 0 10px 7px 0;
-  border-bottom: 1px solid var(--line-solid); white-space: nowrap;
+  text-align: left; font: var(--label); letter-spacing: var(--label-track); text-transform: uppercase;
+  color: var(--ink-muted); padding: 0 10px 6px 0;
+  border-bottom: var(--rule) solid var(--line-solid); white-space: nowrap;
 }
-tbody td { padding: 8px 10px 8px 0; border-bottom: 1px solid var(--line); }
+tbody td { padding: 6px 10px 6px 0; border-bottom: var(--rule) solid var(--line); }
 tbody tr {
   cursor: pointer;
   transition: background var(--fast) var(--ease), transform var(--press) var(--ease);
@@ -357,9 +415,9 @@ tbody tr:focus-visible { background: var(--raise); }
 tbody tr:active { transform: scale(0.995); background: var(--raise); }
 tbody tr[aria-selected="true"] { background: var(--raise); box-shadow: inset 2px 0 0 var(--c-ice); }
 .tag {
-  display: inline-block; padding: 1px 7px; border-radius: 4px;
+  display: inline-block; padding: 1px 6px; border-radius: var(--radius);
   font: 600 10px var(--mono); letter-spacing: 0.03em;
-  border: 1px solid currentColor;
+  border: var(--rule) solid currentColor;
 }
 .num { font-family: var(--mono); text-align: right; }
 
@@ -376,8 +434,8 @@ tbody tr[aria-selected="true"] { background: var(--raise); box-shadow: inset 2px
 
 .footer {
   display: flex; justify-content: space-between; gap: 16px; flex-wrap: wrap;
-  padding: 14px 24px 24px; border-top: 1px solid var(--line);
-  font-size: 11.5px; color: var(--ink-2); margin-top: 4px;
+  padding: 11px var(--edge) 20px;
+  font: 500 10.5px var(--mono); letter-spacing: 0.04em; color: var(--ink-2);
 }
 .footer a { color: var(--ink-2); }
 
@@ -429,11 +487,13 @@ tbody tr[aria-selected="true"] { background: var(--raise); box-shadow: inset 2px
 /* ---------- responsive ---------- */
 
 @media (max-width: 900px) {
-  .topbar { padding: 12px 16px; }
-  main { padding: 14px 16px 22px; gap: 14px; }
+  :root { --edge: 14px; --pad: 12px; }
+  .topbar { padding: 11px 14px; }
   #map { height: 420px; }
   .metric-value { font-size: 21px; }
   .tb-readout { text-align: left; }
+  /* Hairline dividers assume neighbours; wrapped chips have none. */
+  .meta-chip { border-left: 0; padding-left: 0; padding-right: 14px; }
 }
 
 @media (max-width: 560px) {

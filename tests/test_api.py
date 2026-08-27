@@ -251,3 +251,67 @@ def test_rules_are_included_in_the_dashboard_payload(client):
 
 def test_long_distance_scope_is_published_too(client):
     assert set(client.get("/api/rules").json()["long_distance_categories"]) >= {"ICE", "IC", "EC"}
+
+
+# --- where delay is made ---------------------------------------------------
+
+def test_origination_endpoint_splits_created_delay_from_inherited(client):
+    body = client.get("/api/origination?min_steps=1").json()
+    assert body
+    koln = next(r for r in body if r["stop_name"] == "Köln Hbf")
+    # Trip A runs 0 -> 240 -> 900, so 660 s of its delay is made on the last leg.
+    assert koln["created_seconds"] == 660
+    assert koln["carried_in_seconds"] == 240
+
+
+def test_station_minutes_endpoint_reports_a_cumulative_share(client):
+    body = client.get("/api/stations/minutes").json()
+    assert body
+    assert body[-1]["cumulative_pct"] == pytest.approx(100.0)
+    assert body[0]["delay_seconds"] >= body[-1]["delay_seconds"]
+
+
+def test_heatmap_endpoint_returns_weekday_and_hour_buckets(client):
+    body = client.get("/api/heatmap?days=7").json()
+    assert body
+    assert all(1 <= row["dow"] <= 7 and 0 <= row["hour"] <= 23 for row in body)
+    assert all(0 <= row["punctuality_pct"] <= 100 for row in body)
+
+
+def test_geo_segments_endpoint_returns_links_carrying_their_delta(client):
+    body = client.get("/api/geo/segments?min_traversals=1").json()
+    assert body["type"] == "FeatureCollection"
+    assert body["features"]
+    props = body["features"][0]["properties"]
+    assert {"from", "to", "traversals", "delta_seconds"} <= set(props)
+
+
+def test_geo_segments_endpoint_honours_the_traversal_floor(client):
+    """The map must not colour a link on one train's bad afternoon."""
+    assert client.get("/api/geo/segments?min_traversals=50").json()["features"] == []
+
+
+def test_dashboard_payload_carries_the_decision_panels(client):
+    """The panels a control room acts on ride the push, not a second fetch.
+
+    Origination is keyed but empty here: the payload asks for stations seen on
+    at least three approaches, and this fixture is five calls. That floor is the
+    point of the panel, so the fixture bends rather than the rule."""
+    body = client.get("/api/dashboard").json()
+    assert "origination" in body
+    assert body["delay_minutes"]
+    assert "p90_delay_seconds" in body["stations"][0]
+
+
+def test_dashboard_assets_must_be_revalidated_not_reused_blindly(client):
+    """The markup and the script that fills it ship together. Cached without a
+    directive, a browser reused an old app.js against new panels and rendered
+    four empty charts while the API was healthy."""
+    for path in ("/", "/static/app.js"):
+        assert client.get(path).headers["cache-control"] == "no-cache"
+
+
+def test_api_responses_are_not_forced_to_revalidate(client):
+    """The rule is scoped to the page and its assets; API payloads are already
+    uncacheable and must not grow a header that implies otherwise."""
+    assert "cache-control" not in client.get("/api/summary").headers
